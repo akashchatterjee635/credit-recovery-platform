@@ -1,8 +1,14 @@
-'''
+"""
 SLSQP-based recourse solver.
 Limitation: SLSQP expects smooth gradients; LightGBM is piecewise-constant.
 This solver is kept as a BASELINE for comparison with DiCE and binary search.
-'''
+
+Fixes applied:
+  [Bug-1] target_threshold is now used throughout (eligibility check, risk constraint,
+          FeasibilityGuard), NOT the stale self.threshold from construction time.
+  [Bug-2] Stability penalty gamma * sum_j w_j * ((x_j - x_prev_j)/s_j)^2
+          is now actually computed inside objective().
+"""
 from __future__ import annotations
 import pandas as pd
 import numpy as np
@@ -23,18 +29,24 @@ class SLSQPSolver(BaseSolver):
         self.registry = registry or DEFAULT_REGISTRY
         self.threshold = threshold if threshold is not None else self.registry.recourse_threshold()
         self.feature_contract = feature_contract or FEATURE_CONTRACT_V3
-        self.guard = FeasibilityGuard(self.risk_model, self.threshold, self.registry,
-                                      self.feature_contract, max_horizon=12)
 
-    def generate_recourse(self, applicant: pd.DataFrame, target_threshold: float = None, previous_plan: dict = None, gamma_stability: float = 0.0) -> RecourseResult:
+    def generate_recourse(self, applicant: pd.DataFrame,
+                          target_threshold: float = None,
+                          previous_plan: dict = None,
+                          gamma_stability: float = 0.0,
+                          **kwargs) -> RecourseResult:
         if self.risk_model.model is None:
             self.risk_model.load()
 
+        # Bug-1 fix: resolve effective threshold per-call; never fall back to stale self.threshold
+        effective_threshold = target_threshold if target_threshold is not None else self.threshold
+
         current_risk = float(self.risk_model.predict_risk(applicant)[0])
-        if current_risk <= self.threshold:
+        # Bug-1: eligibility check uses effective_threshold, not self.threshold
+        if current_risk <= effective_threshold:
             return RecourseResult(
                 status='eligible', solver=self.solver_name,
-                message='Risk already below threshold.',
+                message='Risk already below target threshold.',
                 original_risk=current_risk)
 
         actionable_classes = ('CONDITIONALLY_ACTIONABLE', 'ACTIONABLE_STATE', 'ACTIONABLE_BEHAVIOUR')
@@ -49,22 +61,38 @@ class SLSQPSolver(BaseSolver):
         bounds = [(self.feature_contract[f].min_val or 0,
                    self.feature_contract[f].max_val) for f in actionable]
 
+        # Per-feature normalisation scales (use |x0_j| as proxy, fallback to 1)
+        scales = np.array([abs(x0[i]) if x0[i] != 0 else 1.0 for i in range(len(actionable))])
+        weights = np.array([self.feature_contract[f].cost_weight for f in actionable])
+
+        # Previous plan target values (for stability penalty)
+        if previous_plan:
+            x_prev = np.array([
+                float(previous_plan.get(f, x0[i]))
+                for i, f in enumerate(actionable)
+            ])
+        else:
+            x_prev = None
+
+        # Bug-2 fix: objective now includes the stability penalty term
         def objective(x):
-            cost = 0.0
-            for i, f in enumerate(actionable):
-                orig, w = x0[i], self.feature_contract[f].cost_weight
-                scale = abs(orig) if orig != 0 else 1.0
-                cost += w * ((x[i] - orig) / scale) ** 2
+            # C_action: normalised weighted distance from current state
+            cost = float(np.sum(weights * ((x - x0) / scales) ** 2))
+            # C_stability: gamma * sum_j w_j * ((x_j - x_prev_j) / s_j)^2
+            if x_prev is not None and gamma_stability > 0.0:
+                cost += gamma_stability * float(np.sum(weights * ((x - x_prev) / scales) ** 2))
             return cost
 
+        # Bug-1 fix: risk constraint uses effective_threshold, not self.threshold
         def risk_con(x):
             cand = applicant.copy()
             for i, f in enumerate(actionable):
                 cand[f] = x[i]
-            return self.threshold - float(self.risk_model.predict_risk(cand)[0])
+            return effective_threshold - float(self.risk_model.predict_risk(cand)[0])
 
         cons = [{'type': 'ineq', 'fun': risk_con}]
         idx = {f: i for i, f in enumerate(actionable)}
+
         for c in self.registry.structural_constraints():
             p = c.params
             if c.constraint_id == 'ANNUITY_CREDIT_MIN_001':
@@ -119,7 +147,10 @@ class SLSQPSolver(BaseSolver):
                 val = round(val)
             cand[f] = val
 
-        vr = self.guard.validate(cand, applicant)
+        # Bug-1: FeasibilityGuard uses effective_threshold per-call, not construction-time threshold
+        guard = FeasibilityGuard(self.risk_model, effective_threshold, self.registry,
+                                 self.feature_contract, max_horizon=12)
+        vr = guard.validate(cand, applicant)
         if vr.passed:
             return RecourseResult(
                 status='success', solver=self.solver_name,

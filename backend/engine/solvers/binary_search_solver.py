@@ -1,8 +1,11 @@
-'''
+"""
 BinarySearchSolver
 Best for single-feature monotonic cases (e.g., just reducing AMT_ANNUITY).
 Searches along a single feature axis via bisection until risk <= threshold.
-'''
+
+Bug-5 fix: effective_threshold is resolved per-call using target_threshold arg,
+           never referencing an undefined variable. FeasibilityGuard created per-call.
+"""
 from __future__ import annotations
 import pandas as pd
 import numpy as np
@@ -21,20 +24,22 @@ class BinarySearchSolver(BaseSolver):
                  n_iter: int = 50):
         self.risk_model = risk_model
         self.registry = registry or DEFAULT_REGISTRY
-        _threshold = threshold if threshold is not None else self.registry.recourse_threshold()
+        self.threshold = threshold if threshold is not None else self.registry.recourse_threshold()
         self.target_feature = target_feature
         self.feature_contract = feature_contract or FEATURE_CONTRACT_V3
         self.n_iter = n_iter
-        self.guard = FeasibilityGuard(risk_model, _threshold, self.registry,
-                                      self.feature_contract, max_horizon=12)
 
-    def generate_recourse(self, applicant: pd.DataFrame, target_threshold: float = None, **kwargs) -> RecourseResult:
-        _threshold = target_threshold if target_threshold is not None else _threshold
+    def generate_recourse(self, applicant: pd.DataFrame,
+                          target_threshold: float = None,
+                          **kwargs) -> RecourseResult:
+        # Bug-5 fix: clean per-call resolution, no reference to undefined _threshold
+        effective_threshold = target_threshold if target_threshold is not None else self.threshold
+
         if self.risk_model.model is None:
             self.risk_model.load()
 
         current_risk = float(self.risk_model.predict_risk(applicant)[0])
-        if current_risk <= _threshold:
+        if current_risk <= effective_threshold:
             return RecourseResult(status='eligible', solver=self.solver_name,
                                   message='Risk already below threshold.',
                                   original_risk=current_risk)
@@ -51,7 +56,7 @@ class BinarySearchSolver(BaseSolver):
             cand = applicant.copy()
             cand[f] = mid
             risk = float(self.risk_model.predict_risk(cand)[0])
-            if risk <= _threshold:
+            if risk <= effective_threshold:
                 best_cand, best_risk = cand, risk
                 lo = mid    # can we do less change?
             else:
@@ -61,7 +66,10 @@ class BinarySearchSolver(BaseSolver):
             return RecourseResult(status='failed', solver=self.solver_name,
                                   message=f'Binary search on {f!r} could not reach threshold.')
 
-        vr = self.guard.validate(best_cand, applicant)
+        # Bug-5: FeasibilityGuard created per-call with effective_threshold
+        guard = FeasibilityGuard(self.risk_model, effective_threshold, self.registry,
+                                 self.feature_contract, max_horizon=12)
+        vr = guard.validate(best_cand, applicant)
         cost = ((float(best_cand.iloc[0][f]) - orig_val) / (abs(orig_val) or 1)) ** 2
         if vr.passed:
             return RecourseResult(

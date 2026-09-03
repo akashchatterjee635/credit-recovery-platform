@@ -1,8 +1,11 @@
-'''
+"""
 DiCE-based solver (Diverse Counterfactual Explanations).
 Designed for tree models where SLSQP gradients are unreliable.
 Requires: pip install dice-ml
-'''
+
+Bug-5 fix: effective_threshold resolved per-call; FeasibilityGuard created per-call.
+Bug-6 fix: post-filter DiCE candidates with effective_threshold (not just desired_class=0).
+"""
 from __future__ import annotations
 import pandas as pd
 import numpy as np
@@ -27,13 +30,11 @@ class DiCESolver(BaseSolver):
                  n_counterfactuals: int = 3):
         self.risk_model = risk_model
         self.registry = registry or DEFAULT_REGISTRY
-        _threshold = threshold if threshold is not None else self.registry.recourse_threshold()
+        # Bug-5: store construction-time threshold cleanly as self.threshold
+        self.threshold = threshold if threshold is not None else self.registry.recourse_threshold()
         self.feature_contract = feature_contract or FEATURE_CONTRACT_V3
         self.training_data = training_data
         self.n_cf = n_counterfactuals
-        self.guard = FeasibilityGuard(risk_model, _threshold, self.registry,
-                                      self.feature_contract, max_horizon=12)
-        self._dice_exp = None
 
     def _build_dice(self, applicant: pd.DataFrame):
         if not DICE_AVAILABLE:
@@ -64,8 +65,12 @@ class DiCESolver(BaseSolver):
         m = dice_ml.Model(model=_SklearnWrapper(self.risk_model), backend='sklearn')
         return dice_ml.Dice(d, m, method='random'), features_to_vary
 
-    def generate_recourse(self, applicant: pd.DataFrame, target_threshold: float = None, **kwargs) -> RecourseResult:
-        _threshold = target_threshold if target_threshold is not None else _threshold
+    def generate_recourse(self, applicant: pd.DataFrame,
+                          target_threshold: float = None,
+                          **kwargs) -> RecourseResult:
+        # Bug-5 fix: clean per-call resolution
+        effective_threshold = target_threshold if target_threshold is not None else self.threshold
+
         if not DICE_AVAILABLE:
             return RecourseResult(
                 status='failed', solver=self.solver_name,
@@ -75,7 +80,7 @@ class DiCESolver(BaseSolver):
             self.risk_model.load()
 
         current_risk = float(self.risk_model.predict_risk(applicant)[0])
-        if current_risk <= _threshold:
+        if current_risk <= effective_threshold:
             return RecourseResult(status='eligible', solver=self.solver_name,
                                   message='Risk already below threshold.',
                                   original_risk=current_risk)
@@ -97,31 +102,36 @@ class DiCESolver(BaseSolver):
             return RecourseResult(status='failed', solver=self.solver_name,
                                   message=f'DiCE generation error: {ex}')
 
-        best_result = None
+        # Bug-5+6: FeasibilityGuard and risk post-filter both use effective_threshold
+        guard = FeasibilityGuard(self.risk_model, effective_threshold, self.registry,
+                                 self.feature_contract, max_horizon=12)
+
         for _, row in cfs_df.iterrows():
             cand = applicant.copy()
             for col in features_to_vary:
                 if col in row.index:
                     cand[col] = row[col]
-            vr = self.guard.validate(cand, applicant)
+
+            new_risk = float(self.risk_model.predict_risk(cand)[0])
+            # Bug-6: explicit post-filter with effective_threshold, not just desired_class=0
+            if new_risk > effective_threshold:
+                continue
+
+            vr = guard.validate(cand, applicant)
             if vr.passed:
-                new_risk = float(self.risk_model.predict_risk(cand)[0])
                 cost = sum(
                     ((float(cand.iloc[0][f]) - float(applicant.iloc[0][f])) /
                      (abs(float(applicant.iloc[0][f])) or 1)) ** 2
                     for f in features_to_vary if f in cand.columns
                 )
-                best_result = RecourseResult(
+                return RecourseResult(
                     status='success', solver=self.solver_name,
                     message='DiCE found a validated counterfactual.',
                     original_risk=current_risk, new_risk=new_risk, cost=cost,
                     original_state=applicant.to_dict(orient='records')[0],
                     new_state=cand.to_dict(orient='records')[0],
                     gate_results=vr.gate_results)
-                break
 
-        if best_result:
-            return best_result
         return RecourseResult(status='failed', solver=self.solver_name,
                               message='DiCE generated counterfactuals but none passed validation.',
-                              violations=['All DiCE candidates failed FeasibilityGuard'])
+                              violations=['All DiCE candidates failed risk threshold or FeasibilityGuard'])

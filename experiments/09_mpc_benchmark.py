@@ -1,29 +1,23 @@
 """
 experiments/09_mpc_benchmark.py
 
-Phase 4 MPC Benchmark — compares three recourse regimes:
-  A. One-shot    (a_0 = x* - x_0 at t=0; no further intervention)
-  B. Sequential  (distribute plan target evenly over T months; no replanning)
-  C. MPC         (event-triggered closed-loop replanning)
+Phase 4 MPC Benchmark -- compares three recourse regimes:
+  A. One-shot        (a_0 = x* - x_0 at t=0; zero intervention thereafter)
+  B. Fixed Sequential (fixed schedule pi_0 computed at t=0; executed blindly,
+                       no recomputation against observed state -- Bug-3 fix)
+  C. MPC             (event-triggered closed-loop replanning)
 
-All regimes share the exact same CRN disturbance stream per applicant (omega_i).
-
-Metrics (per review points 3, 4, 5, 9):
-  terminal_validity     : I[f(x_T) <= tau_T]
-  trajectory_survival   : conditional on recovery, fraction of months in valid state
-  recovery_availability : N_ever_recovered / N
-  valid_state_occupancy : (1/T) * sum_t I[f(x_t) <= tau_t]   <- unconditional
-  cumulative_cost       : sum_t ||a_tilde_t|| / disposable_income
-  action_exec_rate      : months with ||a_tilde_t|| > 0 / T
-  replan_triggers       : N_trigger (event fired)
-  replan_attempts       : N_attempt (solver called)
-  replan_successes      : N_success (solver found plan)
-  replan_failures       : N_failure (solver called, failed)
-  instability_cumulative: sum_t I_t (normalised L1 between consecutive targets)
-  solver_feasibility    : N_success / N_attempt
-
-Point 7: all regimes use same initial tau_target for fairness.
-Point 8: CRN seeds cover action execution, income shocks, debt shocks, policy draws.
+Bug-3 fix: Fixed Sequential stores pi_0 = (x* - x_0)/T as constant monthly
+           actions and replays them verbatim regardless of actual realised state.
+Bug-4 fix: Initial plan generated ONCE outside run_regime() and shared as
+           an immutable dict -- same x* fed to all three regimes.
+Bug-7 fix: Initial plan is NOT counted as a replan. N_trigger = 0 is the
+           expected result in deterministic zero-disturbance.
+Bug-8 fix: zero_disturbance uses a strict deterministic flag so c_t = 1 exactly.
+Bug-9 fix: Pre-filter sample to only applicants for which the shared solver
+           actually finds a feasible plan.
+Bug-10 fix: Occupancy/survival measured on post-transition states x_1..x_T
+            (same timeline as terminal validity on x_T).
 """
 import sys
 import os
@@ -39,17 +33,29 @@ from backend.engine.solver_router import SolverRouter
 from backend.engine.simulator import EnvironmentSimulator, DisturbanceConfig
 from backend.engine.mpc_controller import MPCController
 
-# ── Configuration ────────────────────────────────────────────────────────────
-N_APPLICANTS = 5        # Stage B: deterministic sanity (increase for ablation)
+# ── Configuration ─────────────────────────────────────────────────────────────
+N_APPLICANTS = 5         # Stage B: deterministic sanity
 T_HORIZON    = 12
 DELTA_SAFETY = 0.05
 BASE_TAU     = 0.30
+TAU_TARGET   = BASE_TAU - DELTA_SAFETY   # 0.25
 
-# Stage B: zero disturbance. Change to "mild" / "moderate" / "severe" for ablations.
-ENVIRONMENT  = "zero"
+ENVIRONMENT  = "zero"    # "zero" | "mild" | "moderate" | "severe"
 
 
-# ── Environment factory ───────────────────────────────────────────────────────
+# ── Actionable feature list (used across regimes) ─────────────────────────────
+def _actionable(applicant: pd.DataFrame) -> list:
+    actionable_classes = (
+        "CONDITIONALLY_ACTIONABLE", "ACTIONABLE_STATE", "ACTIONABLE_BEHAVIOUR"
+    )
+    return [
+        f for f, d in FEATURE_CONTRACT_V3.items()
+        if (d.actionable or d.feature_class in actionable_classes)
+        and f in applicant.columns
+    ]
+
+
+# ── Environment factory ────────────────────────────────────────────────────────
 def _get_config(env_name: str) -> DisturbanceConfig:
     if env_name == "zero":
         return DisturbanceConfig.zero_disturbance()
@@ -69,7 +75,7 @@ def _get_config(env_name: str) -> DisturbanceConfig:
     raise ValueError(f"Unknown environment: {env_name!r}")
 
 
-# ── Per-regime runner ─────────────────────────────────────────────────────────
+# ── Per-regime runner ──────────────────────────────────────────────────────────
 def run_regime(
     regime_type: str,
     applicant_orig: pd.DataFrame,
@@ -78,18 +84,18 @@ def run_regime(
     train_df: pd.DataFrame,
     config: DisturbanceConfig,
     crn_seed: int,
+    shared_target: dict | None,          # Bug-4: same plan for all regimes
+    fixed_actions: dict | None,          # Bug-3: precomputed schedule for Sequential
+    is_deterministic: bool = False,      # Bug-8: bypass Beta/Binomial noise
 ) -> dict:
     """
-    Simulates one applicant through T_HORIZON months under a given regime.
+    Simulates one applicant for T_HORIZON months under one regime.
 
-    Point 7: all regimes start from identical x_0 and use the same tau_target
-    for the initial plan generation, so differences are purely due to adaptation.
-    Point 8: CRN — same rng seed used for all regimes of the same applicant.
+    Point 8 (CRN): identical rng seed => identical disturbance draws across regimes.
     """
     sim = EnvironmentSimulator()
-    rng = np.random.RandomState(crn_seed)   # CRN: identical disturbance stream
+    rng = np.random.RandomState(crn_seed)   # CRN
 
-    # Bug-9 fix: wired train_df so DiCE fallback works
     router = SolverRouter(
         risk_model=adapter,
         threshold=BASE_TAU,
@@ -98,29 +104,6 @@ def run_regime(
         training_data=train_df,
     )
 
-    # Point 7: all regimes target the same safety margin at t=0
-    tau_target_init = BASE_TAU - DELTA_SAFETY
-
-    # ── Initial plan (shared across all regimes for fairness) ────────────────
-    initial_res = router.generate_recourse(
-        applicant_orig,
-        target_threshold=tau_target_init,
-    )
-    static_target: dict | None = None
-    if initial_res.get("status") in ("success", "eligible"):
-        new_state = initial_res.get("new_state", {})
-        if new_state:
-            actionable_classes = (
-                "CONDITIONALLY_ACTIONABLE", "ACTIONABLE_STATE", "ACTIONABLE_BEHAVIOUR"
-            )
-            actionable_feats = [
-                f for f, d in FEATURE_CONTRACT_V3.items()
-                if (d.actionable or d.feature_class in actionable_classes)
-                and f in applicant_orig.columns
-            ]
-            static_target = {f: float(new_state[f]) for f in actionable_feats if f in new_state}
-
-    # ── MPC controller (only used for 'mpc' regime) ──────────────────────────
     mpc = MPCController(
         risk_model=adapter,
         base_threshold=BASE_TAU,
@@ -131,11 +114,26 @@ def run_regime(
         delta_r=0.03,
         delta_x=0.10,
     )
-    # Seed MPC with the same initial plan so t=0 starts identically
-    if static_target and regime_type == "mpc":
-        mpc.previous_plan_target = dict(static_target)
+    # Bug-4: Seed MPC with the shared initial plan -- no separate solve at t=0
+    if shared_target and regime_type == "mpc":
+        mpc.previous_plan_target = dict(shared_target)
+        # Seed the expected trajectory using the SLSQP target as t=0 expectation
+        af = _actionable(applicant_orig)
+        mpc.expected_state_next = {
+            f: shared_target.get(f, float(applicant_orig.iloc[0].get(f, 0)))
+            for f in af
+        }
+        # Pre-compute expected risk at x_hat_1
+        try:
+            exp_df = applicant_orig.copy()
+            for f, v in mpc.expected_state_next.items():
+                if f in exp_df.columns:
+                    exp_df.iloc[0, exp_df.columns.get_loc(f)] = v
+            mpc.expected_risk_next = float(adapter.predict_risk(exp_df)[0])
+        except Exception:
+            mpc.expected_risk_next = None
 
-    # ── Counters ─────────────────────────────────────────────────────────────
+    # ── Counters ──────────────────────────────────────────────────────────────
     replan_triggers   = 0
     replan_attempts   = 0
     replan_successes  = 0
@@ -144,8 +142,7 @@ def run_regime(
     cumulative_instab = 0.0
     ever_recovered    = False
     recovery_month    = None
-    months_valid_after_recovery = 0
-    months_valid_total = 0
+    months_valid_total = 0   # Bug-10: counts x_1..x_T (post-transition)
 
     current_state = applicant_orig.copy()
     current_tau   = BASE_TAU
@@ -153,18 +150,7 @@ def run_regime(
     for t in range(T_HORIZON):
         current_tau = sim.policy_env.step(t, config, rng=rng)
 
-        # ── Compute current risk ─────────────────────────────────────────────
-        current_risk = float(adapter.predict_risk(current_state)[0])
-
-        # ── Valid-state occupancy ────────────────────────────────────────────
-        if current_risk <= current_tau:
-            months_valid_total += 1
-            if not ever_recovered:
-                ever_recovered = True
-                recovery_month = t
-            months_valid_after_recovery += 1
-
-        # ── Choose action ────────────────────────────────────────────────────
+        # ── Choose action ──────────────────────────────────────────────────────
         if regime_type == "mpc":
             step_res = mpc.get_action(current_state, t, T_HORIZON, current_tau)
             a_t = step_res["action_t"]
@@ -176,49 +162,63 @@ def run_regime(
             cumulative_instab += step_res["instability_norm"]
 
         elif regime_type == "sequential":
+            # Bug-3 fix: replay pre-computed constant schedule verbatim
             a_t = {}
-            if static_target:
-                remaining = max(1, T_HORIZON - t)
-                for f, targ in static_target.items():
-                    cur = float(current_state.iloc[0].get(f, 0))
-                    delta = (targ - cur) / remaining
-                    if abs(delta) > 1e-9:
-                        a_t[f] = delta
+            if fixed_actions:
+                for f, monthly_delta in fixed_actions.items():
+                    if f in current_state.columns and abs(monthly_delta) > 1e-9:
+                        a_t[f] = monthly_delta
 
-        else:  # one-shot: full intervention at t=0 only
+        else:  # one-shot: full delta at t=0 only
             a_t = {}
-            if t == 0 and static_target:
-                for f, targ in static_target.items():
-                    cur = float(current_state.iloc[0].get(f, 0))
-                    delta = targ - cur
-                    if abs(delta) > 1e-9:
-                        a_t[f] = delta
+            if t == 0 and shared_target:
+                for f, targ in shared_target.items():
+                    if f in current_state.columns:
+                        delta = targ - float(current_state.iloc[0][f])
+                        if abs(delta) > 1e-9:
+                            a_t[f] = delta
 
-        # ── Simulate step (CRN synchronized) ────────────────────────────────
-        next_state, log_t = sim.step(current_state, a_t, t, config, rng=rng)
+        # ── Simulate step (CRN synchronised) ──────────────────────────────────
+        # Bug-8: in deterministic mode bypass execution noise entirely
+        if is_deterministic:
+            next_state = current_state.copy()
+            for f, delta in a_t.items():
+                if f in next_state.columns:
+                    next_state.iloc[0, next_state.columns.get_loc(f)] += delta
+            realized = dict(a_t)
+            log_t = {"realized_action": realized}
+        else:
+            next_state, log_t = sim.step(current_state, a_t, t, config, rng=rng)
 
-        realized = log_t.get("realized_action", {})
+        # ── Bug-10: measure on POST-transition state (x_1..x_T) ───────────────
+        post_risk = float(adapter.predict_risk(next_state)[0])
+        if post_risk <= current_tau:
+            months_valid_total += 1
+            if not ever_recovered:
+                ever_recovered = True
+                recovery_month = t + 1
+
+        realized = log_t.get("realized_action", {}) if not is_deterministic else realized
         realized_norm = sum(abs(v) for v in realized.values())
         if realized_norm > 1e-9:
             months_action += 1
 
-        # Cost scaled by disposable income
         inc = float(current_state.iloc[0].get("AMT_INCOME_TOTAL", 1)) or 1.0
         cumulative_cost += realized_norm / inc
 
         current_state = next_state
 
-    # ── Terminal evaluation ───────────────────────────────────────────────────
+    # ── Terminal eval (x_T -- same timeline as occupancy) ─────────────────────
     terminal_risk     = float(adapter.predict_risk(current_state)[0])
     terminal_validity = int(terminal_risk <= current_tau)
 
-    # Point 9: unconditional valid-state occupancy  O_i = months_valid / T
     valid_occupancy = months_valid_total / T_HORIZON
 
-    # Point 9: conditional trajectory survival  S_i (conditional on recovery)
+    # Conditional survival S_i
     if ever_recovered and recovery_month is not None:
-        denom = T_HORIZON - recovery_month
-        trajectory_survival = months_valid_after_recovery / denom if denom > 0 else 0.0
+        denom = T_HORIZON - recovery_month + 1
+        # Months in valid state from recovery_month to T
+        trajectory_survival = months_valid_total / denom if denom > 0 else 0.0
     else:
         trajectory_survival = 0.0
 
@@ -227,30 +227,25 @@ def run_regime(
     )
 
     return {
-        # Primary outcomes
-        "terminal_validity":    terminal_validity,
-        "terminal_risk":        terminal_risk,
-        "valid_occupancy":      valid_occupancy,
-        "trajectory_survival":  trajectory_survival,
-        "ever_recovered":       int(ever_recovered),
-        "recovery_month":       recovery_month,
-        # Cost
-        "cumulative_cost":      cumulative_cost,
-        "action_exec_rate":     months_action / T_HORIZON,
-        # Replan diagnostics (Point 4)
-        "replan_triggers":      replan_triggers,
-        "replan_attempts":      replan_attempts,
-        "replan_successes":     replan_successes,
-        "replan_failures":      replan_attempts - replan_successes,
-        "solver_feasibility":   solver_feasibility,
+        "terminal_validity":      terminal_validity,
+        "terminal_risk":          terminal_risk,
+        "valid_occupancy":        valid_occupancy,
+        "trajectory_survival":    trajectory_survival,
+        "ever_recovered":         int(ever_recovered),
+        "recovery_month":         recovery_month,
+        "cumulative_cost":        cumulative_cost,
+        "action_exec_rate":       months_action / T_HORIZON,
+        "replan_triggers":        replan_triggers,
+        "replan_attempts":        replan_attempts,
+        "replan_successes":       replan_successes,
+        "replan_failures":        replan_attempts - replan_successes,
+        "solver_feasibility":     solver_feasibility,
         "instability_cumulative": cumulative_instab,
-        # Context
-        "initial_risk":         float(adapter.predict_risk(applicant_orig)[0]),
-        "initial_plan_found":   int(static_target is not None),
+        "initial_risk":           float(adapter.predict_risk(applicant_orig)[0]),
     }
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     adapter = RiskModelAdapter()
     adapter.load()
@@ -260,51 +255,98 @@ if __name__ == "__main__":
 
     registry = ConstraintRegistry()
     config   = _get_config(ENVIRONMENT)
+    is_det   = (ENVIRONMENT == "zero")
 
-    # Use applicants already above threshold where Phase-3 solver finds feasible recourse
+    # Bug-9: pre-filter to applicants above threshold with feasible initial plan
     risks      = adapter.predict_risk(test_df)
     above_mask = risks > BASE_TAU
-    sample_df  = test_df[above_mask].head(N_APPLICANTS)
+    candidates = test_df[above_mask].reset_index(drop=True)
 
-    regimes      = ["one-shot", "sequential", "mpc"]
-    all_results  = {r: [] for r in regimes}
+    # Shared router for initial plan generation
+    shared_router = SolverRouter(
+        risk_model=adapter,
+        threshold=BASE_TAU,
+        registry=registry,
+        feature_contract=FEATURE_CONTRACT_V3,
+        training_data=train_df,
+    )
 
-    print(f"Environment  : {ENVIRONMENT}  (disturbance-free = {ENVIRONMENT == 'zero'})")
-    print(f"Applicants   : {len(sample_df)}")
-    print(f"T_horizon    : {T_HORIZON} months")
-    print(f"delta_safety : {DELTA_SAFETY}  (tau_target = {BASE_TAU - DELTA_SAFETY})")
-    print(f"MPC delta_r  : 0.03   delta_x : 0.10")
+    feasible_applicants = []
+    feasible_targets    = []
+
+    print(f"Pre-filtering for feasible initial plans (tau_target={TAU_TARGET})...")
+    for i in range(len(candidates)):
+        if len(feasible_applicants) >= N_APPLICANTS:
+            break
+        applicant = candidates.iloc[[i]]
+        # Bug-4: one shared plan generation per applicant
+        res = shared_router.generate_recourse(applicant, target_threshold=TAU_TARGET)
+        if res.get("status") in ("success", "eligible") and res.get("new_state"):
+            af = _actionable(applicant)
+            target = {f: float(res["new_state"][f]) for f in af if f in res["new_state"]}
+            if target:
+                feasible_applicants.append(applicant)
+                feasible_targets.append(target)
+                print(f"  Found feasible applicant {len(feasible_applicants)}/{N_APPLICANTS} "
+                      f"(risk={float(adapter.predict_risk(applicant)[0]):.3f})", flush=True)
+
+    if not feasible_applicants:
+        print("No feasible applicants found. Check solver and model calibration.")
+        sys.exit(1)
+
+    print(f"\nRunning benchmark on {len(feasible_applicants)} feasible applicants.")
+    print(f"Environment  : {ENVIRONMENT}  (deterministic={is_det})")
+    print(f"T_horizon    : {T_HORIZON}  |  delta_safety={DELTA_SAFETY}  |  tau_target={TAU_TARGET}")
     print()
 
-    for i in range(len(sample_df)):
-        applicant = sample_df.iloc[[i]]
-        seed      = 42 + i
+    regimes     = ["one-shot", "sequential", "mpc"]
+    all_results = {r: [] for r in regimes}
+
+    for i, (applicant, shared_target) in enumerate(zip(feasible_applicants, feasible_targets)):
+        seed = 42 + i
         init_risk = float(adapter.predict_risk(applicant)[0])
-        print(f"-- Applicant {i+1}/{len(sample_df)}  initial_risk={init_risk:.3f}", flush=True)
+
+        # Bug-3: pre-compute fixed action schedule for Sequential
+        af = _actionable(applicant)
+        fixed_actions = {}
+        for f in af:
+            cur = float(applicant.iloc[0].get(f, 0))
+            targ = shared_target.get(f, cur)
+            delta_total = targ - cur
+            if abs(delta_total) > 1e-9:
+                fixed_actions[f] = delta_total / T_HORIZON  # constant monthly increment
+
+        print(f"-- Applicant {i+1}/{len(feasible_applicants)}  "
+              f"risk={init_risk:.3f}  "
+              f"plan_features={list(shared_target.keys())}", flush=True)
 
         for regime in regimes:
-            res = run_regime(regime, applicant, adapter, registry, train_df, config, seed)
+            res = run_regime(
+                regime, applicant, adapter, registry, train_df,
+                config, seed,
+                shared_target=shared_target,
+                fixed_actions=fixed_actions,
+                is_deterministic=is_det,
+            )
             all_results[regime].append(res)
             print(
                 f"   [{regime:10s}]  "
                 f"valid={res['terminal_validity']}  "
-                f"occupancy={res['valid_occupancy']:.0%}  "
+                f"occ={res['valid_occupancy']:.0%}  "
                 f"cost={res['cumulative_cost']:.4f}  "
                 f"exec={res['action_exec_rate']:.0%}  "
-                f"triggers={res['replan_triggers']}  "
-                f"attempts={res['replan_attempts']}  "
-                f"successes={res['replan_successes']}  "
-                f"instab={res['instability_cumulative']:.3f}",
+                f"trigs={res['replan_triggers']}  "
+                f"succ={res['replan_successes']}",
                 flush=True,
             )
 
-    # ── Summary table ─────────────────────────────────────────────────────────
+    # ── Summary table ──────────────────────────────────────────────────────────
+    N = len(feasible_applicants)
     print()
     print("=" * 72)
-    print(f"  PHASE 4 RESULTS  N={N_APPLICANTS}  T={T_HORIZON}  ENV={ENVIRONMENT}")
+    print(f"  PHASE 4 RESULTS  N={N}  T={T_HORIZON}  ENV={ENVIRONMENT}")
     print("=" * 72)
-    hdr = f"  {'Metric':<34} {'One-Shot':>10} {'Sequential':>12} {'MPC':>8}"
-    print(hdr)
+    print(f"  {'Metric':<34} {'One-Shot':>10} {'Sequential':>12} {'MPC':>8}")
     print("-" * 72)
 
     def col(regime, key):
@@ -321,20 +363,19 @@ if __name__ == "__main__":
             return str(v)
 
     rows = [
-        ("Terminal Validity",         "terminal_validity",      "{:.1%}"),
-        ("Valid-State Occupancy",      "valid_occupancy",        "{:.1%}"),
-        ("Recovery Availability",      "ever_recovered",         "{:.1%}"),
-        ("Conditional Traj Survival",  "trajectory_survival",    "{:.1%}"),
-        ("Avg Cumulative Cost",        "cumulative_cost",        "{:.4f}"),
-        ("Action Execution Rate",      "action_exec_rate",       "{:.1%}"),
-        ("Initial Plan Found",         "initial_plan_found",     "{:.1%}"),
-        ("-- MPC only --",             None,                     ""),
-        ("  Replan Triggers",          "replan_triggers",        "{:.1f}"),
-        ("  Replan Attempts",          "replan_attempts",        "{:.1f}"),
-        ("  Replan Successes",         "replan_successes",       "{:.1f}"),
-        ("  Replan Failures",          "replan_failures",        "{:.1f}"),
-        ("  Solver Feasibility Rate",  "solver_feasibility",     "{:.1%}"),
-        ("  Instability (cumulative)", "instability_cumulative", "{:.3f}"),
+        ("Terminal Validity",          "terminal_validity",      "{:.1%}"),
+        ("Valid-State Occupancy (O)",   "valid_occupancy",        "{:.1%}"),
+        ("Recovery Availability (A)",   "ever_recovered",         "{:.1%}"),
+        ("Conditional Traj Survival",   "trajectory_survival",    "{:.1%}"),
+        ("Avg Cumulative Cost",         "cumulative_cost",        "{:.4f}"),
+        ("Action Execution Rate",       "action_exec_rate",       "{:.1%}"),
+        ("-- MPC diagnostics --",       None,                     ""),
+        ("  Replan Triggers (N_trig)",  "replan_triggers",        "{:.1f}"),
+        ("  Replan Attempts",           "replan_attempts",        "{:.1f}"),
+        ("  Replan Successes",          "replan_successes",       "{:.1f}"),
+        ("  Replan Failures",           "replan_failures",        "{:.1f}"),
+        ("  Solver Feasibility Rate",   "solver_feasibility",     "{:.1%}"),
+        ("  Plan Instability (norm)",   "instability_cumulative", "{:.3f}"),
     ]
 
     for label, key, spec in rows:
@@ -348,11 +389,11 @@ if __name__ == "__main__":
 
     print("=" * 72)
     print()
-    print("Point 10 sanity check:")
-    print("  Under ZERO disturbance + on-plan execution, MPC should show:")
-    print("  - replan_triggers ~ 1 (initial plan only)")
-    print("  - action_exec_rate > 0%  (non-empty actions)")
-    print("  - valid_occupancy increases over time")
-    print()
-    print("NOTE: All disturbance parameters are labelled simulation assumptions,")
-    print("      not empirically estimated real-world frequencies.")
+    print("Stage-B sanity assertions (zero disturbance):")
+    mpc_trigs = col("mpc", "replan_triggers")
+    mpc_exec  = col("mpc", "action_exec_rate")
+    print(f"  replan_triggers (MPC) = {mpc_trigs:.1f}  [expected: 0]")
+    print(f"  action_exec_rate (MPC)= {mpc_exec:.0%}  [expected: >0%]")
+    print(f"  action_exec_rate (Seq)= {col('sequential', 'action_exec_rate'):.0%}  [expected: >0%]")
+    ok = (mpc_trigs == 0 and mpc_exec > 0)
+    print(f"\n  Controller validation: {'PASS' if ok else 'FAIL -- investigate trigger or solver'}")
