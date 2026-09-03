@@ -12,19 +12,20 @@ class FeatureDefinition:
     max_val: Optional[float] = None
     allowed_categories: Optional[List[str]] = None
     cost_weight: float = 1.0
+    domain: str = 'continuous'
     description: str = ''
     corresponding_action: str = ''
 
 
 FEATURE_CONTRACT_V3 = {
     'DAYS_BIRTH': FeatureDefinition(
-        'DAYS_BIRTH', 'IMMUTABLE', False,
+        'DAYS_BIRTH', 'IMMUTABLE', False, domain='integer',
         description='Age in days (negative). Cannot be changed.'),
     'NAME_EDUCATION_TYPE': FeatureDefinition(
         'NAME_EDUCATION_TYPE', 'IMMUTABLE', False,
         description='Highest education level.'),
     'DAYS_EMPLOYED': FeatureDefinition(
-        'DAYS_EMPLOYED', 'TIME_EVOLVING', False,
+        'DAYS_EMPLOYED', 'TIME_EVOLVING', False, domain='integer',
         description='Employment tenure. Changes naturally with time.'),
     'INST_LATE_RATIO': FeatureDefinition(
         'INST_LATE_RATIO', 'TIME_EVOLVING', False,
@@ -45,7 +46,7 @@ FEATURE_CONTRACT_V3 = {
         cost_weight=1.0, description='Monthly annuity payment.',
         corresponding_action='Negotiate repayment schedule'),
     'BUREAU_ACTIVE_COUNT': FeatureDefinition(
-        'BUREAU_ACTIVE_COUNT', 'CONDITIONALLY_ACTIONABLE', True, min_val=0,
+        'BUREAU_ACTIVE_COUNT', 'CONDITIONALLY_ACTIONABLE', True, min_val=0, domain='integer',
         cost_weight=0.8, description='Number of active bureau credit lines.',
         corresponding_action='Close unnecessary credit lines'),
     'BUREAU_TOTAL_DEBT': FeatureDefinition(
@@ -75,7 +76,7 @@ FEATURE_CONTRACT_V3 = {
         'BUREAU_AVG_DAYS_OVERDUE', 'TIME_EVOLVING', False,
         description='Average days overdue across bureau records.'),
     'PREV_APP_COUNT': FeatureDefinition(
-        'PREV_APP_COUNT', 'HISTORICAL_IMMUTABLE', False,
+        'PREV_APP_COUNT', 'HISTORICAL_IMMUTABLE', False, domain='integer',
         description='Number of previous applications.'),
     'PREV_AMT_CREDIT_MEAN': FeatureDefinition(
         'PREV_AMT_CREDIT_MEAN', 'HISTORICAL_IMMUTABLE', False,

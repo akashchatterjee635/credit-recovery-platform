@@ -18,28 +18,15 @@ DATA_DIR = 'data'
 N_SAMPLE = 1000
 
 def get_held_out_applicants(adapter, n=1000):
-    df = build_enriched_dataset(DATA_DIR)
-    target = 'TARGET'
-    df = df.dropna(subset=[target])
-
-    # 60/20/20 split used in risk_model.py
-    X_trainval, X_test, _, y_test = train_test_split(
-        df, df[target].astype(int), test_size=0.2, random_state=42, stratify=df[target].astype(int)
-    )
-
-    # Predict risk on test set
-    risks = adapter.predict_risk(X_test)
-
-    # Filter above threshold
+    df = pd.read_csv('data/test_reference.csv')
+    df = df.dropna(subset=['TARGET'])
+    risks = adapter.predict_risk(df)
     threshold = DEFAULT_REGISTRY.recourse_threshold()
-    above_thresh = X_test[risks > threshold].copy()
-
-    # Sample n rows
+    above_thresh = df[risks > threshold].copy()
     if len(above_thresh) > n:
         sample = above_thresh.sample(n=n, random_state=42)
     else:
         sample = above_thresh
-
     return sample
 
 
@@ -68,12 +55,7 @@ if __name__ == '__main__':
     print(f'Loading training data for DiCE/durability...')
     # Load 5000 train rows
     df_all = build_enriched_dataset(DATA_DIR)
-    trainval, _, _, _ = train_test_split(
-        df_all, df_all['TARGET'].astype(int), test_size=0.2, random_state=42, stratify=df_all['TARGET'].astype(int)
-    )
-    X_train, _, _, _ = train_test_split(
-        trainval, trainval['TARGET'].astype(int), test_size=0.25, random_state=42, stratify=trainval['TARGET'].astype(int)
-    )
+    X_train = pd.read_csv('data/train_reference.csv')
     train_sample = X_train.head(5000)
 
     kwargs = dict(risk_model=adapter, threshold=DEFAULT_REGISTRY.recourse_threshold(),
@@ -155,7 +137,7 @@ if __name__ == '__main__':
         row_str = f'{label:<30}'
         for name, _ in solvers:
             vals = [r[key] for r in results_by_solver[name]]
-            mean, lower, upper = bootstrap_ci(vals, is_pct=is_pct)
+            mean, lower, upper = bootstrap_ci(vals)
             row_str += f' {format_ci(mean, lower, upper, is_pct):<15}'
         print(row_str)
 

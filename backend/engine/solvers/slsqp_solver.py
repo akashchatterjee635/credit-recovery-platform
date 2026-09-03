@@ -114,7 +114,10 @@ class SLSQPSolver(BaseSolver):
 
         cand = applicant.copy()
         for i, f in enumerate(actionable):
-            cand[f] = res.x[i]
+            val = res.x[i]
+            if self.feature_contract[f].domain == 'integer':
+                val = round(val)
+            cand[f] = val
 
         vr = self.guard.validate(cand, applicant)
         if vr.passed:

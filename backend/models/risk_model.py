@@ -319,6 +319,16 @@ class RiskModelAdapter:
         print(f'Raw uncalibrated pipeline saved to {RAW_MODEL_PATH}')
         print(f'Logistic Regression baseline saved to {LR_MODEL_PATH}')
 
+        os.makedirs('data', exist_ok=True)
+        X_train_orig = df.loc[X_train.index]
+        X_cal_orig = df.loc[X_cal.index]
+        X_test_orig = df.loc[X_test.index]
+        
+        X_train_orig.to_csv('data/train_reference.csv', index=False)
+        X_cal_orig.to_csv('data/cal_reference.csv', index=False)
+        X_test_orig.to_csv('data/test_reference.csv', index=False)
+        print('Reference datasets saved to data/')
+
     def load(self, path: str = MODEL_PATH):
         if not os.path.exists(path):
             raise FileNotFoundError(f'Model not found at {path}. Train first.')

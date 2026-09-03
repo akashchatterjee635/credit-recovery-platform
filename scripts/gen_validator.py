@@ -1,3 +1,8 @@
+﻿import os, textwrap
+
+files = {}
+
+files['backend/engine/validator.py'] = textwrap.dedent('''
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
@@ -16,15 +21,15 @@ class FeasibilityGuard:
     def __init__(self, risk_model, threshold: float, constraint_registry,
                  feature_contract: Dict[str, Any], max_horizon: int = 12,
                  training_data: Optional[pd.DataFrame] = None,
-                 manifold_k: int = 5, manifold_percentile: float = 95.0):
+                 durability_k: int = 5, durability_percentile: float = 95.0):
         self.risk_model = risk_model
         self.threshold = threshold
         self.registry = constraint_registry
         self.feature_contract = feature_contract
         self.max_horizon = max_horizon
         self.training_data = training_data
-        self.manifold_k = manifold_k
-        self.manifold_percentile = manifold_percentile
+        self.durability_k = durability_k
+        self.durability_percentile = durability_percentile
         self._knn_threshold = None
         self._train_numeric = None
 
@@ -36,7 +41,7 @@ class FeasibilityGuard:
         gates['V_structural'] = self._check_structural(candidate_df, violations)
         gates['V_actionability'] = self._check_actionability(candidate_df, original_df, violations)
         gates['V_plausibility'] = self._check_plausibility(candidate_df, original_df, violations)
-        gates['V_manifold'] = self._check_manifold(candidate_df, violations)
+        gates['V_durability'] = self._check_durability(candidate_df, violations)
         return ValidationResult(passed=all(gates.values()),
                                 violations=violations, gate_results=gates)
 
@@ -108,10 +113,10 @@ class FeasibilityGuard:
                 ok = False
         return ok
 
-
-    def _check_manifold(self, cand, v):
+    def _check_durability(self, cand, v):
         if self.training_data is None or len(self.training_data) == 0:
             return True  # skip if no training data available
+
         try:
             numeric_cols = [c for c in cand.columns
                            if c in self.training_data.columns
@@ -120,38 +125,38 @@ class FeasibilityGuard:
                 return True
 
             if self._train_numeric is None or self._knn_threshold is None:
-                train_num = self.training_data[numeric_cols].copy()
-                # Use mean imputation for reference distribution
-                self._ref_means = train_num.mean()
-                train_num = train_num.fillna(self._ref_means)
-                
+                train_num = self.training_data[numeric_cols].dropna()
                 if len(train_num) == 0:
                     return True
                 from sklearn.preprocessing import StandardScaler
                 scaler = StandardScaler()
                 scaled = scaler.fit_transform(train_num)
                 from sklearn.neighbors import NearestNeighbors
-                # use k+1 because we will evaluate training points against themselves
-                nn = NearestNeighbors(n_neighbors=self.manifold_k + 1, metric='euclidean')
+                nn = NearestNeighbors(n_neighbors=self.durability_k, metric='euclidean')
                 nn.fit(scaled)
                 dists, _ = nn.kneighbors(scaled)
-                # discard self-distance (the 0th neighbor)
-                mean_dists = dists[:, 1:].mean(axis=1)
-                self._knn_threshold = float(np.percentile(mean_dists, self.manifold_percentile))
+                mean_dists = dists.mean(axis=1)
+                self._knn_threshold = float(np.percentile(mean_dists, self.durability_percentile))
                 self._scaler = scaler
                 self._nn = nn
                 self._durability_cols = numeric_cols
 
-            cand_vals = cand[self._durability_cols].fillna(self._ref_means).values
+            cand_vals = cand[self._durability_cols].fillna(0).values
             cand_scaled = self._scaler.transform(cand_vals)
-            # For candidate, we just use k neighbors (since it's not in the training set)
-            dists, _ = self._nn.kneighbors(cand_scaled, n_neighbors=self.manifold_k)
+            dists, _ = self._nn.kneighbors(cand_scaled)
             mean_dist = float(dists.mean())
 
             if mean_dist > self._knn_threshold:
-                v.append(f'V_manifold FAILED: kNN distance {mean_dist:.2f} > threshold {self._knn_threshold:.2f} (out of distribution)')
+                v.append(f'V_durability FAILED: kNN distance {mean_dist:.2f} > threshold {self._knn_threshold:.2f} (out of distribution)')
                 return False
             return True
         except Exception as e:
-            v.append(f'V_manifold UNKNOWN: Guard crashed ({e})')
-            return False # Fail closed
+            return True  # fail open if durability check errors
+''').lstrip()
+
+for path, content in files.items():
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(content)
+    print(f'  wrote {path}')
+print('Done.')

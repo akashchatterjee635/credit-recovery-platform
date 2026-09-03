@@ -1,3 +1,8 @@
+﻿import os, textwrap
+
+files = {}
+
+files['backend/main.py'] = textwrap.dedent('''
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -28,9 +33,9 @@ try:
     _risk_adapter = RiskModelAdapter()
     _risk_adapter.load()
 
-    train_path = 'data/train_reference.csv'
+    train_path = 'data/application_train.csv'
     if _os.path.exists(train_path):
-        _training_sample = pd.read_csv(train_path)
+        _training_sample = pd.read_csv(train_path, nrows=5000)
         print(f'Loaded {len(_training_sample)} training samples for DiCE.')
 
     _router = SolverRouter(_risk_adapter, threshold=_THRESHOLD,
@@ -119,12 +124,6 @@ class ApplicantData(BaseModel):
     DAYS_BIRTH: int
     DAYS_EMPLOYED: int
     NAME_EDUCATION_TYPE: str
-    BUREAU_TOTAL_DEBT: Optional[float] = None
-    BUREAU_MAX_OVERDUE: Optional[float] = None
-    BUREAU_ACTIVE_COUNT: Optional[float] = None
-    INST_LATE_RATIO: Optional[float] = None
-    INST_AVG_DAYS_LATE: Optional[float] = None
-    PREV_REFUSED_RATIO: Optional[float] = None
 
 
 class RoadmapRequest(BaseModel):
@@ -134,12 +133,6 @@ class RoadmapRequest(BaseModel):
     DAYS_BIRTH: int
     DAYS_EMPLOYED: int
     NAME_EDUCATION_TYPE: str
-    BUREAU_TOTAL_DEBT: Optional[float] = None
-    BUREAU_MAX_OVERDUE: Optional[float] = None
-    BUREAU_ACTIVE_COUNT: Optional[float] = None
-    INST_LATE_RATIO: Optional[float] = None
-    INST_AVG_DAYS_LATE: Optional[float] = None
-    PREV_REFUSED_RATIO: Optional[float] = None
     journey_id: Optional[int] = None
     borrower_id: Optional[int] = None
 
@@ -216,3 +209,11 @@ def generate_roadmap(req: RoadmapRequest):
     result['borrower_id'] = borrower_id
     result['journey_id'] = journey_id
     return result
+''').lstrip()
+
+for path, content in files.items():
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(content)
+    print(f'  wrote {path}')
+print('Done.')
