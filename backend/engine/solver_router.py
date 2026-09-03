@@ -67,7 +67,7 @@ class SolverRouter:
             return False
         return self._probe_monotonicity(applicant, actionable[0])
 
-    def generate_recourse(self, applicant: pd.DataFrame) -> dict:
+    def generate_recourse(self, applicant: pd.DataFrame, previous_plan: dict = None, gamma_stability: float = 0.0) -> dict:
         if self.risk_model.model is None:
             self.risk_model.load()
 
