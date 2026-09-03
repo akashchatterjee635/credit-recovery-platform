@@ -26,7 +26,7 @@ class SLSQPSolver(BaseSolver):
         self.guard = FeasibilityGuard(self.risk_model, self.threshold, self.registry,
                                       self.feature_contract, max_horizon=12)
 
-    def generate_recourse(self, applicant: pd.DataFrame, previous_plan: dict = None, gamma_stability: float = 0.0) -> RecourseResult:
+    def generate_recourse(self, applicant: pd.DataFrame, target_threshold: float = None, previous_plan: dict = None, gamma_stability: float = 0.0) -> RecourseResult:
         if self.risk_model.model is None:
             self.risk_model.load()
 

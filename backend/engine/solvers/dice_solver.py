@@ -27,11 +27,11 @@ class DiCESolver(BaseSolver):
                  n_counterfactuals: int = 3):
         self.risk_model = risk_model
         self.registry = registry or DEFAULT_REGISTRY
-        self.threshold = threshold if threshold is not None else self.registry.recourse_threshold()
+        _threshold = threshold if threshold is not None else self.registry.recourse_threshold()
         self.feature_contract = feature_contract or FEATURE_CONTRACT_V3
         self.training_data = training_data
         self.n_cf = n_counterfactuals
-        self.guard = FeasibilityGuard(risk_model, self.threshold, self.registry,
+        self.guard = FeasibilityGuard(risk_model, _threshold, self.registry,
                                       self.feature_contract, max_horizon=12)
         self._dice_exp = None
 
@@ -64,7 +64,8 @@ class DiCESolver(BaseSolver):
         m = dice_ml.Model(model=_SklearnWrapper(self.risk_model), backend='sklearn')
         return dice_ml.Dice(d, m, method='random'), features_to_vary
 
-    def generate_recourse(self, applicant: pd.DataFrame) -> RecourseResult:
+    def generate_recourse(self, applicant: pd.DataFrame, target_threshold: float = None, **kwargs) -> RecourseResult:
+        _threshold = target_threshold if target_threshold is not None else _threshold
         if not DICE_AVAILABLE:
             return RecourseResult(
                 status='failed', solver=self.solver_name,
@@ -74,7 +75,7 @@ class DiCESolver(BaseSolver):
             self.risk_model.load()
 
         current_risk = float(self.risk_model.predict_risk(applicant)[0])
-        if current_risk <= self.threshold:
+        if current_risk <= _threshold:
             return RecourseResult(status='eligible', solver=self.solver_name,
                                   message='Risk already below threshold.',
                                   original_risk=current_risk)

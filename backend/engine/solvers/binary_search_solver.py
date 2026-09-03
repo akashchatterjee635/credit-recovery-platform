@@ -21,19 +21,20 @@ class BinarySearchSolver(BaseSolver):
                  n_iter: int = 50):
         self.risk_model = risk_model
         self.registry = registry or DEFAULT_REGISTRY
-        self.threshold = threshold if threshold is not None else self.registry.recourse_threshold()
+        _threshold = threshold if threshold is not None else self.registry.recourse_threshold()
         self.target_feature = target_feature
         self.feature_contract = feature_contract or FEATURE_CONTRACT_V3
         self.n_iter = n_iter
-        self.guard = FeasibilityGuard(risk_model, self.threshold, self.registry,
+        self.guard = FeasibilityGuard(risk_model, _threshold, self.registry,
                                       self.feature_contract, max_horizon=12)
 
-    def generate_recourse(self, applicant: pd.DataFrame) -> RecourseResult:
+    def generate_recourse(self, applicant: pd.DataFrame, target_threshold: float = None, **kwargs) -> RecourseResult:
+        _threshold = target_threshold if target_threshold is not None else _threshold
         if self.risk_model.model is None:
             self.risk_model.load()
 
         current_risk = float(self.risk_model.predict_risk(applicant)[0])
-        if current_risk <= self.threshold:
+        if current_risk <= _threshold:
             return RecourseResult(status='eligible', solver=self.solver_name,
                                   message='Risk already below threshold.',
                                   original_risk=current_risk)
@@ -50,7 +51,7 @@ class BinarySearchSolver(BaseSolver):
             cand = applicant.copy()
             cand[f] = mid
             risk = float(self.risk_model.predict_risk(cand)[0])
-            if risk <= self.threshold:
+            if risk <= _threshold:
                 best_cand, best_risk = cand, risk
                 lo = mid    # can we do less change?
             else:
