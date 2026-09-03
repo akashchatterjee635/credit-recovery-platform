@@ -27,6 +27,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from backend.models.risk_model import RiskModelAdapter
+from backend.models.deep_risk_adapter import DeepRiskAdapter
 from backend.engine.constraint_registry import ConstraintRegistry
 from backend.engine.feature_contract import FEATURE_CONTRACT_V3
 from backend.engine.solver_router import SolverRouter

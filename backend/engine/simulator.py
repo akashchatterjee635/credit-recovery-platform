@@ -49,8 +49,8 @@ class DisturbanceConfig:
     p_debt_shock: float = 0.05
 
     # Financial shock distribution parameters
-    income_shock_min: float = 0.50   # Rare shock: income drops to 50% - 80% of current
-    income_shock_max: float = 0.80
+    income_shock_min: float = 0.80   # Rare shock: income drops to 80% - 90% of current (10-20% downside)
+    income_shock_max: float = 0.90
     income_base_mean: float = 1.00   # Baseline: income multiplier ~ Normal(1.0, 0.02)
     income_base_std: float = 0.02
 
@@ -62,7 +62,7 @@ class DisturbanceConfig:
     # Policy environment parameters
     policy_shift: bool = False
     base_threshold: float = 0.30     # Baseline approval/recourse threshold
-    shifted_threshold: float = 0.25  # Shifted approval/recourse threshold
+    shifted_threshold: float = 0.27  # Moderate shift (0.27); use 0.25 for Severe
     policy_shift_step: int = 6       # Step at or after which policy shift takes effect
     macro_threshold_noise_std: float = 0.0  # Optional macro threshold volatility
 

@@ -91,6 +91,7 @@ class SolverRouter:
         attempted_tiers = []
         all_violations  = []
         for tier_name, solver in tiers:
+            if solver is None: continue
             attempted_tiers.append(tier_name)
             result = solver.generate_recourse(
                 applicant,
