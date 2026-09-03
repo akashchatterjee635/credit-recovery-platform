@@ -9,23 +9,23 @@ import numpy as np
 from backend.engine.base_solver import BaseSolver, RecourseResult
 from backend.engine.validator import FeasibilityGuard
 from backend.engine.constraint_registry import DEFAULT_REGISTRY
-from backend.engine.feature_contract import FEATURE_CONTRACT_V2
+from backend.engine.feature_contract import FEATURE_CONTRACT_V3
 
 
 class BinarySearchSolver(BaseSolver):
     solver_name = 'BinarySearchSolver'
 
-    def __init__(self, risk_model, threshold: float = 0.3,
+    def __init__(self, risk_model, threshold: float = None,
                  target_feature: str = 'AMT_ANNUITY',
                  registry=None, feature_contract=None,
                  n_iter: int = 50):
         self.risk_model = risk_model
-        self.threshold = threshold
-        self.target_feature = target_feature
         self.registry = registry or DEFAULT_REGISTRY
-        self.feature_contract = feature_contract or FEATURE_CONTRACT_V2
+        self.threshold = threshold if threshold is not None else self.registry.recourse_threshold()
+        self.target_feature = target_feature
+        self.feature_contract = feature_contract or FEATURE_CONTRACT_V3
         self.n_iter = n_iter
-        self.guard = FeasibilityGuard(risk_model, threshold, self.registry,
+        self.guard = FeasibilityGuard(risk_model, self.threshold, self.registry,
                                       self.feature_contract, max_horizon=12)
 
     def generate_recourse(self, applicant: pd.DataFrame) -> RecourseResult:

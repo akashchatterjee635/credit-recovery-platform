@@ -1,76 +1,95 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import Optional
 import pandas as pd
 from backend.models.risk_model import RiskModelAdapter
 from backend.engine.solver_router import SolverRouter
 from backend.engine.planner import RecoveryTrajectoryPlanner
 from backend.engine.constraint_registry import DEFAULT_REGISTRY
-from backend.engine.feature_contract import FEATURE_CONTRACT_V2
+from backend.engine.feature_contract import FEATURE_CONTRACT_V3
+from backend.engine.explainer import RiskExplainer
 from backend.database.schema import SessionLocal, init_db, Borrower, RecoveryJourney
 from backend.database.schema import BorrowerSnapshot, ModelDecision, RecoveryPlan, RecoveryAction
-import uuid, datetime
+import uuid, datetime, os as _os
 
-app = FastAPI(title='Credit Recovery Intelligence API v2')
+app = FastAPI(title='Credit Recovery Intelligence API v3')
 
-# ── Startup ────────────────────────────────────────────────────────────────
+_THRESHOLD = DEFAULT_REGISTRY.recourse_threshold()
+MODEL_VERSION = 'lgbm-v3-calibrated'
+FC_VERSION = 'feature-contract-v3'
+CR_VERSION = 'constraint-registry-v2'
+SOLVER_VERSION = 'SolverRouter-v2'
+
+_risk_adapter = _router = _planner = _explainer = None
+_training_sample = None
+
 try:
     init_db()
     _risk_adapter = RiskModelAdapter()
     _risk_adapter.load()
-    _router = SolverRouter(_risk_adapter, threshold=0.3,
+
+    train_path = 'data/application_train.csv'
+    if _os.path.exists(train_path):
+        _training_sample = pd.read_csv(train_path, nrows=5000)
+        print(f'Loaded {len(_training_sample)} training samples for DiCE.')
+
+    _router = SolverRouter(_risk_adapter, threshold=_THRESHOLD,
                            registry=DEFAULT_REGISTRY,
-                           feature_contract=FEATURE_CONTRACT_V2)
+                           feature_contract=FEATURE_CONTRACT_V3,
+                           training_data=_training_sample)
     _planner = RecoveryTrajectoryPlanner(registry=DEFAULT_REGISTRY)
-    print('API startup complete.')
+    _explainer = RiskExplainer(_risk_adapter, FEATURE_CONTRACT_V3)
+    print('API v3 startup complete.')
 except Exception as e:
-    print(f'WARNING: startup failed – {e}')
-    _risk_adapter = _router = _planner = None
-
-MODEL_VERSION = 'lgbm-v2'
-FC_VERSION = 'feature-contract-v2'
-CR_VERSION = 'constraint-registry-v1'
-SOLVER_VERSION = 'SolverRouter-v1'
+    print(f'WARNING: startup failed: {e}')
 
 
-def _band(score: float) -> str:
+def _band(score):
     if score < 0.20: return 'LOW'
     if score < 0.30: return 'MODERATE'
     if score < 0.50: return 'ELEVATED'
     return 'HIGH'
 
 
-def _write_prediction(features: dict, risk: float, band: str, applicable: bool):
-    '''Persist prediction to DB (non-blocking; errors are logged, not raised).'''
+def _write_prediction(features, risk, band, applicable, borrower_id=None, journey_id=None):
     try:
         db = SessionLocal()
+        if borrower_id and journey_id:
+            journey = db.query(RecoveryJourney).filter_by(id=journey_id).first()
+            if journey:
+                snap_count = db.query(BorrowerSnapshot).filter_by(journey_id=journey.id).count()
+                snap = BorrowerSnapshot(journey_id=journey.id, snapshot_index=snap_count, features_json=features)
+                db.add(snap); db.flush()
+                decision = ModelDecision(journey_id=journey.id, snapshot_id=snap.id,
+                    predicted_default_risk=risk, risk_band=band,
+                    threshold_used=_THRESHOLD, recovery_applicable=applicable,
+                    model_version=MODEL_VERSION, feature_contract_version=FC_VERSION)
+                db.add(decision); db.commit()
+                return journey.borrower_id, journey.id
         ext_id = str(uuid.uuid4())
         borrower = Borrower(external_id=ext_id)
         db.add(borrower); db.flush()
         journey = RecoveryJourney(borrower_id=borrower.id)
         db.add(journey); db.flush()
-        snap = BorrowerSnapshot(journey_id=journey.id, snapshot_index=0,
-                                features_json=features)
+        snap = BorrowerSnapshot(journey_id=journey.id, snapshot_index=0, features_json=features)
         db.add(snap); db.flush()
-        decision = ModelDecision(
-            journey_id=journey.id, snapshot_id=snap.id,
+        decision = ModelDecision(journey_id=journey.id, snapshot_id=snap.id,
             predicted_default_risk=risk, risk_band=band,
-            threshold_used=0.3, recovery_applicable=applicable,
+            threshold_used=_THRESHOLD, recovery_applicable=applicable,
             model_version=MODEL_VERSION, feature_contract_version=FC_VERSION)
-        db.add(decision)
-        db.commit()
-        return journey.id
+        db.add(decision); db.commit()
+        return borrower.id, journey.id
     except Exception as exc:
         print(f'[DB] write_prediction failed: {exc}')
-        return None
+        return None, None
     finally:
         db.close()
 
 
-def _write_plan(journey_id, result: dict, plan: dict):
+def _write_plan(journey_id, result, plan):
     try:
         db = SessionLocal()
-        rp = RecoveryPlan(
-            journey_id=journey_id,
+        rp = RecoveryPlan(journey_id=journey_id,
             solver_used=result.get('solver', 'unknown'),
             solver_version=SOLVER_VERSION,
             constraint_registry_version=CR_VERSION,
@@ -81,10 +100,8 @@ def _write_plan(journey_id, result: dict, plan: dict):
         db.add(rp); db.flush()
         for step in plan.get('timeline', []):
             for action in step.get('actions', []):
-                db.add(RecoveryAction(
-                    plan_id=rp.id, month=step['month'],
-                    feature_name=action.get('feature'),
-                    direction=action.get('direction'),
+                db.add(RecoveryAction(plan_id=rp.id, month=step['month'],
+                    feature_name=action.get('feature'), direction=action.get('direction'),
                     monthly_change=action.get('monthly_change'),
                     cumulative_target=action.get('cumulative_target'),
                     reassessment_date=step.get('reassessment_date')))
@@ -104,9 +121,20 @@ class ApplicantData(BaseModel):
     NAME_EDUCATION_TYPE: str
 
 
+class RoadmapRequest(BaseModel):
+    AMT_CREDIT: float
+    AMT_INCOME_TOTAL: float
+    AMT_ANNUITY: float
+    DAYS_BIRTH: int
+    DAYS_EMPLOYED: int
+    NAME_EDUCATION_TYPE: str
+    journey_id: Optional[int] = None
+    borrower_id: Optional[int] = None
+
+
 @app.get('/')
 def root():
-    return {'service': 'Credit Recovery Intelligence API v2', 'status': 'running'}
+    return {'service': 'Credit Recovery Intelligence API v3', 'status': 'running'}
 
 
 @app.get('/constraints')
@@ -124,28 +152,41 @@ def predict_risk(applicant: ApplicantData):
     df = pd.DataFrame([applicant.model_dump()])
     score = float(_risk_adapter.predict_risk(df)[0])
     band = _band(score)
-    applicable = score > _router.threshold if _router else score > 0.3
+    applicable = score > _THRESHOLD
     features = applicant.model_dump()
-    _write_prediction(features, score, band, applicable)
-    return {
+
+    borrower_id, journey_id = _write_prediction(features, score, band, applicable)
+
+    explanation = {}
+    if _explainer:
+        explanation = _explainer.explain(df)
+
+    resp = {
         'predicted_default_risk': round(score, 4),
         'risk_band': band,
         'recovery_assessment_applicable': applicable,
-        'threshold_used': 0.3,
+        'threshold_used': _THRESHOLD,
         'model_version': MODEL_VERSION,
+        'borrower_id': borrower_id,
+        'journey_id': journey_id,
     }
+    if explanation.get('available'):
+        resp['top_risk_drivers'] = explanation['top_risk_drivers']
+    return resp
 
 
 @app.post('/generate_roadmap')
-def generate_roadmap(applicant: ApplicantData):
+def generate_roadmap(req: RoadmapRequest):
     if _router is None or _planner is None:
         raise HTTPException(503, 'Router or planner not loaded.')
-    df = pd.DataFrame([applicant.model_dump()])
+    features = {k: v for k, v in req.model_dump().items() if k not in ('journey_id', 'borrower_id')}
+    df = pd.DataFrame([features])
 
-    # Persist initial state
     score = float(_risk_adapter.predict_risk(df)[0])
     band = _band(score)
-    journey_id = _write_prediction(applicant.model_dump(), score, band, score > 0.3)
+    borrower_id, journey_id = _write_prediction(
+        features, score, band, score > _THRESHOLD,
+        borrower_id=req.borrower_id, journey_id=req.journey_id)
 
     result = _router.generate_recourse(df)
 
@@ -154,7 +195,12 @@ def generate_roadmap(applicant: ApplicantData):
         result['sequential_plan'] = plan
         result['constraint_registry_version'] = CR_VERSION
         result['solver_version'] = SOLVER_VERSION
+        # Standardise validation key
+        if 'gate_results' in result:
+            result['validation'] = result.pop('gate_results')
         if journey_id:
             _write_plan(journey_id, result, plan)
 
+    result['borrower_id'] = borrower_id
+    result['journey_id'] = journey_id
     return result

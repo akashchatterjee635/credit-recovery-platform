@@ -9,7 +9,7 @@ import numpy as np
 from backend.engine.base_solver import BaseSolver, RecourseResult
 from backend.engine.validator import FeasibilityGuard
 from backend.engine.constraint_registry import DEFAULT_REGISTRY
-from backend.engine.feature_contract import FEATURE_CONTRACT_V2
+from backend.engine.feature_contract import FEATURE_CONTRACT_V3
 
 try:
     import dice_ml
@@ -21,17 +21,17 @@ except ImportError:
 class DiCESolver(BaseSolver):
     solver_name = 'DiCESolver'
 
-    def __init__(self, risk_model, threshold: float = 0.3,
+    def __init__(self, risk_model, threshold: float = None,
                  registry=None, feature_contract=None,
                  training_data: pd.DataFrame = None,
                  n_counterfactuals: int = 3):
         self.risk_model = risk_model
-        self.threshold = threshold
         self.registry = registry or DEFAULT_REGISTRY
-        self.feature_contract = feature_contract or FEATURE_CONTRACT_V2
+        self.threshold = threshold if threshold is not None else self.registry.recourse_threshold()
+        self.feature_contract = feature_contract or FEATURE_CONTRACT_V3
         self.training_data = training_data
         self.n_cf = n_counterfactuals
-        self.guard = FeasibilityGuard(risk_model, threshold, self.registry,
+        self.guard = FeasibilityGuard(risk_model, self.threshold, self.registry,
                                       self.feature_contract, max_horizon=12)
         self._dice_exp = None
 
