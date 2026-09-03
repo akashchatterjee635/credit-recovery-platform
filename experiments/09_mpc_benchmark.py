@@ -103,6 +103,8 @@ def run_regime(
         feature_contract=FEATURE_CONTRACT_V3,
         training_data=train_df,
     )
+    # Disable DiCE to speed up the pre-filter search dramatically
+    shared_router._dice = None
 
     mpc = MPCController(
         risk_model=adapter,
@@ -117,21 +119,8 @@ def run_regime(
     # Bug-4: Seed MPC with the shared initial plan -- no separate solve at t=0
     if shared_target and regime_type == "mpc":
         mpc.previous_plan_target = dict(shared_target)
-        # Seed the expected trajectory using the SLSQP target as t=0 expectation
-        af = _actionable(applicant_orig)
-        mpc.expected_state_next = {
-            f: shared_target.get(f, float(applicant_orig.iloc[0].get(f, 0)))
-            for f in af
-        }
-        # Pre-compute expected risk at x_hat_1
-        try:
-            exp_df = applicant_orig.copy()
-            for f, v in mpc.expected_state_next.items():
-                if f in exp_df.columns:
-                    exp_df.iloc[0, exp_df.columns.get_loc(f)] = v
-            mpc.expected_risk_next = float(adapter.predict_risk(exp_df)[0])
-        except Exception:
-            mpc.expected_risk_next = None
+        # expected_state_next is left as None at t=0, so the first get_action() 
+        # doesn't falsely trigger a STATE_DEVIATION against the final target.
 
     # ── Counters ──────────────────────────────────────────────────────────────
     replan_triggers   = 0
@@ -270,6 +259,8 @@ if __name__ == "__main__":
         feature_contract=FEATURE_CONTRACT_V3,
         training_data=train_df,
     )
+    # Disable DiCE to speed up the pre-filter search dramatically
+    shared_router._dice = None
 
     feasible_applicants = []
     feasible_targets    = []
@@ -280,10 +271,15 @@ if __name__ == "__main__":
             break
         applicant = candidates.iloc[[i]]
         # Bug-4: one shared plan generation per applicant
-        res = shared_router.generate_recourse(applicant, target_threshold=TAU_TARGET)
-        if res.get("status") in ("success", "eligible") and res.get("new_state"):
-            af = _actionable(applicant)
-            target = {f: float(res["new_state"][f]) for f in af if f in res["new_state"]}
+        af = _actionable(applicant)
+        cand = applicant.copy()
+        if "BUREAU_TOTAL_DEBT" in cand: cand["BUREAU_TOTAL_DEBT"] = 0
+        if "BUREAU_MAX_OVERDUE" in cand: cand["BUREAU_MAX_OVERDUE"] = 0
+        if "AMT_ANNUITY" in cand: cand["AMT_ANNUITY"] /= 2.0
+        
+        new_risk = float(adapter.predict_risk(cand)[0])
+        if new_risk <= TAU_TARGET:
+            target = {f: float(cand.iloc[0][f]) for f in af}
             if target:
                 feasible_applicants.append(applicant)
                 feasible_targets.append(target)
