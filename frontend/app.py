@@ -1,102 +1,130 @@
 import streamlit as st
 import requests
-import json
 import pandas as pd
 
-API_URL = "http://127.0.0.1:8000"
+API_URL = 'http://127.0.0.1:8000'
 
-st.set_page_config(page_title="Credit Recovery Platform", layout="wide")
+st.set_page_config(page_title='Credit Recovery Platform', layout='wide')
+st.title('Credit Recovery Intelligence Dashboard')
+st.caption('Post-decision algorithmic recourse platform — NOT a lender approval engine.')
 
-st.title("Credit Recovery Intelligence Dashboard")
-st.markdown("Post-Decision Credit Recovery Intelligence for declined / borderline applicants.")
+BAND_COLOR = {'LOW': 'green', 'MODERATE': 'blue', 'ELEVATED': 'orange', 'HIGH': 'red'}
 
-# Sidebar for Applicant Input
-st.sidebar.header("Applicant Simulator")
-st.sidebar.markdown("Modify values to simulate a credit applicant.")
+# ── Sidebar ────────────────────────────────────────────────────────────────────
+st.sidebar.header('Applicant Simulator')
+amt_income  = st.sidebar.number_input('Total Income (AMT_INCOME_TOTAL)', value=80000.0, step=5000.0)
+amt_credit  = st.sidebar.number_input('Credit Amount (AMT_CREDIT)',      value=800000.0, step=10000.0)
+amt_annuity = st.sidebar.number_input('Annuity Amount (AMT_ANNUITY)',    value=45000.0, step=1000.0)
+days_birth  = st.sidebar.number_input('Age in Days (negative)',  value=-15000, max_value=0)
+days_emp    = st.sidebar.number_input('Days Employed (negative)', value=-2000, max_value=0)
+education   = st.sidebar.selectbox('Education Level',
+    ['Secondary / secondary special', 'Higher education',
+     'Incomplete higher', 'Lower secondary'])
 
-amt_income = st.sidebar.number_input("Total Income (AMT_INCOME_TOTAL)", value=80000.0, step=5000.0)
-amt_credit = st.sidebar.number_input("Credit Amount (AMT_CREDIT)", value=800000.0, step=10000.0)
-amt_annuity = st.sidebar.number_input("Annuity Amount (AMT_ANNUITY)", value=45000.0, step=1000.0)
-days_birth = st.sidebar.number_input("Age in Days (Negative)", value=-15000, max_value=0)
-days_employed = st.sidebar.number_input("Days Employed (Negative)", value=-2000, max_value=0)
-education = st.sidebar.selectbox("Education Level", ["Secondary / secondary special", "Higher education", "Incomplete higher", "Lower secondary"])
+payload = {'AMT_CREDIT': amt_credit, 'AMT_INCOME_TOTAL': amt_income,
+           'AMT_ANNUITY': amt_annuity, 'DAYS_BIRTH': days_birth,
+           'DAYS_EMPLOYED': days_emp, 'NAME_EDUCATION_TYPE': education}
 
-applicant_data = {
-    "AMT_CREDIT": amt_credit,
-    "AMT_INCOME_TOTAL": amt_income,
-    "AMT_ANNUITY": amt_annuity,
-    "DAYS_BIRTH": days_birth,
-    "DAYS_EMPLOYED": days_employed,
-    "NAME_EDUCATION_TYPE": education
-}
-
-st.subheader("1. Current Assessment")
-if st.button("Evaluate Credit Risk"):
+# ── Section 1: Risk Assessment ─────────────────────────────────────────────────
+st.subheader('1. Default Risk Assessment')
+if st.button('Evaluate Risk'):
     try:
-        response = requests.post(f"{API_URL}/predict", json=applicant_data)
-        if response.status_code == 200:
-            data = response.json()
-            risk_score = data["risk_score"]
-            approved = data["approved"]
-            
-            col1, col2 = st.columns(2)
-            col1.metric("Predicted Risk of Default", f"{risk_score:.1%}")
-            
-            if approved:
-                col2.success("Status: Approved")
-                st.session_state['requires_recovery'] = False
+        r = requests.post(f'{API_URL}/predict', json=payload)
+        if r.status_code == 200:
+            data = r.json()
+            risk = data['predicted_default_risk']
+            band = data['risk_band']
+            applicable = data['recovery_assessment_applicable']
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric('Predicted Default Risk', f'{risk:.1%}')
+            col2.metric('Risk Band', band)
+            col3.metric('Model Version', data.get('model_version', 'N/A'))
+
+            color = BAND_COLOR.get(band, 'gray')
+            st.markdown(f'**Risk Band: :{color}[{band}]**')
+
+            if applicable:
+                st.info('Recovery Assessment Applicable — this applicant may benefit from a recourse roadmap.')
+                st.session_state['show_recovery'] = True
+                st.session_state['payload'] = payload
             else:
-                col2.error("Status: High Risk / Declined")
-                st.session_state['requires_recovery'] = True
-                st.session_state['applicant_data'] = applicant_data
+                st.success('Risk below recourse threshold. No recovery roadmap required.')
+                st.session_state['show_recovery'] = False
         else:
-            st.error(f"Error: {response.text}")
+            st.error(f'API error: {r.text}')
     except requests.exceptions.ConnectionError:
-        st.error("Cannot connect to API. Is the FastAPI server running?")
+        st.error('Cannot connect to API. Start the FastAPI server first.')
 
-st.markdown("---")
-st.subheader("2. Dynamic Recovery Roadmap")
+# ── Section 2: Recovery Roadmap ────────────────────────────────────────────────
+st.markdown('---')
+st.subheader('2. Sequential Recovery Roadmap')
 
-if st.session_state.get('requires_recovery', False):
-    st.info("Applicant is eligible for the Recovery Eligibility Router.")
-    if st.button("Generate Recovery Plan"):
-        with st.spinner("Running Cost-Aware Solver & Sequential Planner..."):
+if st.session_state.get('show_recovery', False):
+    if st.button('Generate Recovery Roadmap'):
+        with st.spinner('Running Solver Router + Trajectory Planner...'):
             try:
-                response = requests.post(f"{API_URL}/generate_roadmap", json=st.session_state['applicant_data'])
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    if data["status"] == "success":
-                        st.success("Feasible Recovery Path Found!")
-                        
+                r = requests.post(f'{API_URL}/generate_roadmap',
+                                  json=st.session_state['payload'])
+                if r.status_code == 200:
+                    data = r.json()
+                    status = data.get('status')
+
+                    if status == 'success':
+                        st.success(f'Solver: **{data.get("solver_tier", data.get("solver", "?"))}** — Feasible recourse path found.')
                         col1, col2, col3 = st.columns(3)
-                        col1.metric("Original Risk", f"{data['original_risk']:.1%}")
-                        col2.metric("Target Risk", f"{data['new_risk']:.1%}")
-                        col3.metric("Solver Action Cost", f"{data['cost']:.2f}")
-                        
-                        st.markdown("### ?? Sequential Recovery Timeline")
-                        seq_plan = data.get("sequential_plan", {})
-                        if seq_plan:
-                            st.info(f"Target risk can be realistically achieved in **{seq_plan['total_months']} months** without violating max monthly change limits.")
-                            
-                            for step in seq_plan['timeline']:
-                                with st.expander(f"Month {step['month']} - Next Reassessment Date: {step['reassessment_date']}", expanded=(step['month']==1)):
-                                    for action in step['actions']:
-                                        st.markdown(f"- {action}")
-                                    if step['is_final']:
-                                        st.success("?? Target Risk Threshold Reached! Applicant Ready for Re-evaluation.")
-                        
-                        st.markdown("---")
-                        st.markdown("### ?? Explainability / Audit (Lender Console View)")
-                        st.markdown("Comparison between Day 0 and Terminal State:")
-                        df_comp = pd.DataFrame([data["original_state"], data["new_state"]], index=["Original", "Target"])
-                        st.dataframe(df_comp)
-                        
+                        col1.metric('Original Risk', f'{data["original_risk"]:.1%}')
+                        col2.metric('Target Risk',   f'{data["new_risk"]:.1%}')
+                        col3.metric('Action Cost',   f'{data["cost"]:.4f}')
+
+                        plan = data.get('sequential_plan', {})
+                        plan_status = plan.get('status', '')
+                        if plan_status == 'infeasible_within_horizon':
+                            st.warning(plan['message'])
+                        elif plan.get('timeline'):
+                            st.markdown(f'### Recovery Timeline — {plan["total_months"]} months')
+                            tiers = ', '.join(data.get('tiers_attempted', []))
+                            if tiers:
+                                st.caption(f'Solver tiers attempted: {tiers}')
+                            for step in plan['timeline']:
+                                label = f'Month {step["month"]} — {step["reassessment_date"]}'
+                                if step['is_final']:
+                                    label += ' ✅ Final'
+                                with st.expander(label, expanded=(step['month'] == 1)):
+                                    for a in step['actions']:
+                                        st.markdown(f'- {a["label"]}')
+
+                        st.markdown('### Validation Gates')
+                        gates = data.get('validation_gates', {})
+                        for gate, passed in gates.items():
+                            icon = '✅' if passed else '❌'
+                            st.write(f'{icon} {gate}')
+
+                        st.markdown('### Audit View (Original vs Target State)')
+                        st.dataframe(pd.DataFrame([data['original_state'],
+                                                    data['new_state']],
+                                                   index=['Original', 'Target']))
+
+                    elif status == 'eligible':
+                        st.success('Risk already below threshold — no recourse needed.')
                     else:
-                        st.warning(data["message"])
+                        st.error(data.get('message', 'Recourse failed.'))
+                        for v in data.get('violations', []):
+                            st.write(f'  ⚠️ {v}')
                 else:
-                    st.error(f"Error: {response.text}")
+                    st.error(f'API error: {r.text}')
             except requests.exceptions.ConnectionError:
-                 st.error("Cannot connect to API. Is the FastAPI server running?")
+                st.error('Cannot connect to API.')
 else:
-    st.write("Submit a high-risk applicant profile to see recovery options.")
+    st.info('First run the Risk Assessment above. The roadmap generator activates for ELEVATED / HIGH risk applicants.')
+
+# ── Section 3: Constraint Registry ────────────────────────────────────────────
+st.markdown('---')
+with st.expander('View Constraint Registry (all active rules)'):
+    try:
+        r = requests.get(f'{API_URL}/constraints')
+        if r.status_code == 200:
+            constraints = r.json()['constraints']
+            st.dataframe(pd.DataFrame(constraints))
+    except Exception:
+        st.write('API not reachable.')
