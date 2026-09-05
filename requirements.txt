@@ -1,4 +1,4 @@
-﻿altair==6.2.2
+altair==6.2.2
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.14.2
@@ -75,7 +75,6 @@ watchdog==6.0.0
 webencodings==0.6.1
 websockets==16.1.1
 wrapt==2.4.0
-਍楤散洭൬猊慨൰洊瑡汰瑯楬ൢ瀊瑹獥൴
 dice-ml
 shap
 torch

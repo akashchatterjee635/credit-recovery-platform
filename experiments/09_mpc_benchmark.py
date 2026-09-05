@@ -36,7 +36,6 @@ from backend.engine.mpc_controller import MPCController
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 N_APPLICANTS = 5         # Stage B: deterministic sanity
-T_HORIZON    = 12
 DELTA_SAFETY = 0.05
 BASE_TAU     = 0.30
 TAU_TARGET   = BASE_TAU - DELTA_SAFETY   # 0.25
@@ -88,6 +87,7 @@ def run_regime(
     shared_target: dict | None,          # Bug-4: same plan for all regimes
     fixed_actions: dict | None,          # Bug-3: precomputed schedule for Sequential
     is_deterministic: bool = False,      # Bug-8: bypass Beta/Binomial noise
+    T_HORIZON: int = 12,
 ) -> dict:
     """
     Simulates one applicant for T_HORIZON months under one regime.
@@ -105,7 +105,7 @@ def run_regime(
         training_data=train_df,
     )
     # Disable DiCE to speed up the pre-filter search dramatically
-    shared_router._dice = None
+    router._dice = None
 
     mpc = MPCController(
         risk_model=adapter,
@@ -329,6 +329,7 @@ def run_benchmark(N_APPLICANTS=25, T_HORIZON=6, use_deep=False):
                 shared_target=shared_target,
                 fixed_actions=fixed_actions,
                 is_deterministic=is_det,
+                T_HORIZON=T_HORIZON,
             )
             all_results[regime].append(res)
             print(

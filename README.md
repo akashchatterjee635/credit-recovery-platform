@@ -19,34 +19,40 @@ Built based on advanced research in sequential algorithmic recourse and closed-l
 ## Local Installation
 
 1. **Clone the repository:**
-   \\ash
+   ```bash
    git clone https://github.com/akashchatterjee635/credit-recovery-platform.git
    cd credit-recovery-platform
-   \2. **Set up the virtual environment:**
-   \\ash
+   ```
+2. **Set up the virtual environment:**
+   ```bash
    python -m venv venv
    source venv/bin/activate  # On Windows: .\venv\Scripts\activate
    pip install -r requirements.txt
-   \3. **Get the Dataset:**
+   ```
+3. **Get the Dataset:**
    The training pipeline expects the Home Credit Default Risk dataset from Kaggle.
-   Ensure your \kaggle.json\ is configured, then run:
-   \\ash
+   Ensure your `kaggle.json` is configured, then run:
+   ```bash
    python fetch_kagglehub.py
-   \4. **Train the Models:**
+   ```
+4. **Train the Models:**
    *For the LightGBM Baseline:*
-   \\ash
+   ```bash
    python backend/models/risk_model.py
-   \   *For the Temporal Deep Learning Pipeline:*
-   \\ash
+   ```
+   *For the Temporal Deep Learning Pipeline:*
+   ```bash
    python backend/data/temporal_builder.py
    python experiments/10_temporal_baselines.py
-   \5. **Run the Application:**
+   ```
+5. **Run the Application:**
    Open two terminals.
    
    *Terminal 1 (Backend API):*
-   \\ash
+   ```bash
    uvicorn backend.main:app --reload
-   \   *Terminal 2 (Frontend Dashboard):*
-   \\ash
+   ```
+   *Terminal 2 (Frontend Dashboard):*
+   ```bash
    streamlit run frontend/app.py
-   \
+   ```
