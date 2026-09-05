@@ -236,8 +236,13 @@ def run_regime(
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    adapter = RiskModelAdapter()
+def run_benchmark(N_APPLICANTS=25, T_HORIZON=6, use_deep=False):
+    if use_deep:
+        from backend.models.deep_risk_adapter import DeepRiskAdapter
+        adapter = DeepRiskAdapter(model_path='backend/models/deep_fusion_model.pth')
+    else:
+        from backend.models.risk_model import RiskModelAdapter
+        adapter = RiskModelAdapter()
     adapter.load()
 
     test_df  = pd.read_csv("data/test_reference.csv").dropna(subset=["TARGET"])
@@ -394,3 +399,6 @@ if __name__ == "__main__":
     print(f"  action_exec_rate (Seq)= {col('sequential', 'action_exec_rate'):.0%}  [expected: >0%]")
     ok = (mpc_trigs == 0 and mpc_exec > 0)
     print(f"\n  Controller validation: {'PASS' if ok else 'FAIL -- investigate trigger or solver'}")
+
+if __name__ == '__main__':
+    run_benchmark(N_APPLICANTS=5, T_HORIZON=6, use_deep=False)

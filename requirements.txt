@@ -78,3 +78,5 @@ wrapt==2.4.0
 ਍楤散洭൬猊慨൰洊瑡汰瑯楬ൢ瀊瑹獥൴
 dice-ml
 shap
+torch
+torchvision

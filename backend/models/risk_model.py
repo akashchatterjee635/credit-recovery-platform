@@ -1,3 +1,4 @@
+from backend.models.base_model import BaseRiskAdapter
 '''
 backend/models/risk_model.py
 
@@ -123,7 +124,7 @@ def _eval_metrics(y_true, y_prob, y_pred, label: str = '') -> dict:
     }
 
 
-class RiskModelAdapter:
+class RiskModelAdapter(BaseRiskAdapter):
     def __init__(self):
         self.model = None              # Production calibrated classifier
         self.raw_pipeline = None       # Uncalibrated pipeline (prep + LightGBM)

@@ -130,6 +130,7 @@ def process_static_data(df: pd.DataFrame) -> (np.ndarray, np.ndarray, list, list
     return X_cont, X_cat, cont_cols, cat_cols
 
 def build_datasets():
+    os.makedirs('data/tensors', exist_ok=True)
     splits = ['train', 'cal', 'test']
     
     # Ensure reproducibility

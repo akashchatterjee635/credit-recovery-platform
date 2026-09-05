@@ -52,8 +52,9 @@ class DeepRiskAdapter(BaseRiskAdapter):
             ft_params=ft_params
         )
         
-        if self.model_path and os.path.exists(self.model_path):
-            self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
+        if not self.model_path or not os.path.exists(self.model_path):
+            raise FileNotFoundError(f"Trained deep model weights not found at {self.model_path}. Please run experiments/10_temporal_baselines.py first to train the model.")
+        self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
             
         self.model.to(self.device)
         self.model.eval()
