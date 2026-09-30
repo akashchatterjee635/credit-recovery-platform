@@ -18,6 +18,19 @@ Built based on advanced research in sequential algorithmic recourse and closed-l
 
 ## Local Installation
 
+The reproducible quick path is:
+
+```bash
+make setup
+make test
+make train-smoke
+make run
+```
+
+`train-smoke` creates a deterministic demo artifact so `/predict` can run without
+raw Kaggle data. It is architecture-validation data only and must not be used for
+predictive-performance claims.
+
 1. **Clone the repository:**
    ```bash
    git clone https://github.com/akashchatterjee635/credit-recovery-platform.git
@@ -27,7 +40,7 @@ Built based on advanced research in sequential algorithmic recourse and closed-l
    ```bash
    python -m venv venv
    source venv/bin/activate  # On Windows: .\venv\Scripts\activate
-   pip install -r requirements.txt
+   pip install -e ".[static,deep,ui,dev]"
    ```
 3. **Get the Dataset:**
    The training pipeline expects the Home Credit Default Risk dataset from Kaggle.
@@ -38,12 +51,13 @@ Built based on advanced research in sequential algorithmic recourse and closed-l
 4. **Train the Models:**
    *For the LightGBM Baseline:*
    ```bash
-   python backend/models/risk_model.py
+   python -m scripts.train_static --config configs/static.yaml
    ```
    *For the Temporal Deep Learning Pipeline:*
    ```bash
-   python backend/data/temporal_builder.py
-   python experiments/10_temporal_baselines.py
+   python -m scripts.build_temporal_data --config configs/temporal.yaml
+   python -m scripts.train_temporal --config configs/deep.yaml
+   python -m scripts.evaluate --run-id <run-id>
    ```
 5. **Run the Application:**
    Open two terminals.
@@ -56,3 +70,14 @@ Built based on advanced research in sequential algorithmic recourse and closed-l
    ```bash
    streamlit run frontend/app.py
    ```
+
+## Data, migrations, and evidence
+
+See `DATASET.md` for source, licensing, checksums, and temporal availability.
+Production temporal tensors are built only from genuine pre-cutoff auxiliary-table
+events; the synthetic generator lives under `experiments/synthetic_smoke_test/`.
+
+Apply schema changes with `alembic upgrade head`. Benchmark runs are written to
+`experiments/outputs/<run_id>/` with configuration, applicant-level results,
+environment metadata, summary intervals, and a report. Governance limitations are
+documented in `docs/MODEL_CARD.md` and `docs/RECOURSE_CARD.md`.

@@ -1,0 +1,10 @@
+{
+  "seed": 42,
+  "dataset": "data/train_reference.csv",
+  "label": "TARGET",
+  "output": "backend/models/lgbm_model.pkl",
+  "smoke_output": "artifacts/demo_static_model.joblib",
+  "n_estimators": 300,
+  "learning_rate": 0.05,
+  "preprocessing_version": "static-preprocessor-v3"
+}

@@ -9,17 +9,29 @@ Hierarchy:
 All entities carry versioning fields for full audit traceability.
 '''
 import datetime
+import os
 from sqlalchemy import (Column, String, Integer, Float, Boolean,
-                        DateTime, ForeignKey, JSON, create_engine)
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+                        DateTime, ForeignKey, JSON, create_engine, UniqueConstraint)
+from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 
 DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///./credit_recovery.db')
 engine = create_engine(DATABASE_URL, connect_args={'check_same_thread': False}
                         if 'sqlite' in DATABASE_URL else {})
-SessionLocal = sessionmaker(bind=engine)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 Base = declarative_base()
 
-import os
+
+def get_db():
+    """FastAPI database dependency with commit/rollback/close semantics."""
+    db: Session = SessionLocal()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 class Borrower(Base):
@@ -46,6 +58,7 @@ class RecoveryJourney(Base):
 class BorrowerSnapshot(Base):
     '''One row per observed state of the borrower (x_0, x_1, ..., x_T).'''
     __tablename__ = 'borrower_snapshot'
+    __table_args__ = (UniqueConstraint('journey_id', 'snapshot_index', name='uq_journey_snapshot'),)
     id = Column(Integer, primary_key=True, index=True)
     journey_id = Column(Integer, ForeignKey('recovery_journey.id'), nullable=False)
     snapshot_index = Column(Integer, nullable=False)   # 0 = initial
@@ -71,9 +84,10 @@ class ModelDecision(Base):
 
 class RecoveryPlan(Base):
     __tablename__ = 'recovery_plan'
+    __table_args__ = (UniqueConstraint('journey_id', 'plan_version', name='uq_journey_plan'),)
     id = Column(Integer, primary_key=True, index=True)
     journey_id = Column(Integer, ForeignKey('recovery_journey.id'), nullable=False)
-    plan_version = Column(Integer, default=1)
+    plan_version = Column(Integer, nullable=False, default=1)
     solver_used = Column(String)
     solver_version = Column(String)
     constraint_registry_version = Column(String)
@@ -81,6 +95,7 @@ class RecoveryPlan(Base):
     target_risk = Column(Float)
     total_months = Column(Integer)
     status = Column(String)   # feasible | infeasible_within_horizon | failed
+    replan_reason = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     actions = relationship('RecoveryAction', back_populates='plan')
     journey = relationship('RecoveryJourney', back_populates='plans')

@@ -92,9 +92,9 @@ if st.button('Evaluate Risk'):
                 st.markdown('#### Why is this risk level?')
                 for d in drivers:
                     icon = ACTION_ICON.get(d['actionability'], '?')
-                    st.write(f'{icon} **{d["feature"]}**: {d["direction"]} modeled risk score ({d["actionability"]})')
                     sign = '+' if d['direction'] == 'increases_risk' else '-'
-                    action = f' | Action: {d["action"]}' if d.get('action') else ''
+                    action = f' | Action: **{d["action"]}**' if d.get('action') else ''
+                    st.write(f'{icon} **{d["feature"]}**: {d["direction"]} modeled risk score ({d["actionability"]}){action}')
                     
                 st.caption('🟢 Actionable  🟡 Planning/Time  🔴 Immutable  ⚪ Derived')
 

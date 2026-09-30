@@ -332,7 +332,11 @@ class RiskModelAdapter(BaseRiskAdapter):
 
     def load(self, path: str = MODEL_PATH):
         if not os.path.exists(path):
-            raise FileNotFoundError(f'Model not found at {path}. Train first.')
+            demo_path = 'artifacts/demo_static_model.joblib'
+            if path == MODEL_PATH and os.path.exists(demo_path):
+                path = demo_path
+            else:
+                raise FileNotFoundError(f'Model not found at {path}. Train first.')
         payload = joblib.load(path)
         self.model = payload.get('calibrated_model', payload.get('pipeline'))
         self.raw_pipeline = payload.get('raw_pipeline')
@@ -397,6 +401,16 @@ class RiskModelAdapter(BaseRiskAdapter):
                     return est
 
         return None
+
+    def get_preprocessor(self):
+        """Return the fitted preprocessing step through a stable adapter API."""
+        if self.raw_pipeline is None:
+            if self.model is None:
+                self.load()
+            if self.raw_pipeline is None:
+                return None
+        named_steps = getattr(self.raw_pipeline, "named_steps", {})
+        return named_steps.get("prep")
 
 
 if __name__ == '__main__':

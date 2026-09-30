@@ -6,5 +6,6 @@ backend/models/*.pkl
 .env
 .pytest_cache/
 credit_recovery.db
+work/
 
 data/tensors/

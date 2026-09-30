@@ -13,7 +13,7 @@ class TemporalAttention(nn.Module):
         self.v = nn.Linear(hidden_dim, 1, bias=False)
         self.tanh = nn.Tanh()
 
-    def forward(self, H):
+    def forward(self, H, mask=None):
         # H shape: (batch_size, seq_len, hidden_dim)
         
         # e_t = v^T * tanh(W_h * h_t + b_h)
@@ -22,7 +22,15 @@ class TemporalAttention(nn.Module):
         
         # alpha_t = softmax(e_t)
         # shape: (batch_size, seq_len, 1)
+        if mask is not None:
+            valid = mask.to(dtype=torch.bool, device=energy.device).unsqueeze(-1)
+            energy = energy.masked_fill(~valid, torch.finfo(energy.dtype).min)
+            all_padding = ~valid.any(dim=1, keepdim=True)
+            energy = torch.where(all_padding, torch.zeros_like(energy), energy)
         alpha = torch.softmax(energy, dim=1)
+        if mask is not None:
+            alpha = alpha * valid.to(alpha.dtype)
+            alpha = alpha / alpha.sum(dim=1, keepdim=True).clamp_min(1e-12)
         
         # h* = sum(alpha_t * h_t)
         # shape: (batch_size, hidden_dim)
@@ -67,13 +75,13 @@ class TemporalStaticFusionModel(nn.Module):
         # 4. Final Classification Head
         self.classifier = nn.Linear(hidden_dim, 1)
         
-    def forward(self, x_seq, x_cont, x_cat):
+    def forward(self, x_seq, x_cont, x_cat, sequence_mask=None):
         # -- Temporal --
         # H shape: (batch, seq_len, hidden_dim)
         H = self.temporal_encoder(x_seq)
         
         # h_t shape: (batch, hidden_dim)
-        h_t, alpha = self.temporal_attention(H)
+        h_t, alpha = self.temporal_attention(H, sequence_mask)
         
         # -- Static --
         # h_s shape: (batch, d_model) -> (batch, hidden_dim)
@@ -98,7 +106,7 @@ class StaticOnlyModel(nn.Module):
         self.static_encoder = FTTransformer(**ft_params)
         self.classifier = nn.Linear(ft_params['d_model'], 1)
         
-    def forward(self, x_seq, x_cont, x_cat):
+    def forward(self, x_seq, x_cont, x_cat, sequence_mask=None):
         h_s = self.static_encoder(x_cont, x_cat)
         return self.classifier(h_s), None
 
@@ -115,8 +123,8 @@ class TemporalOnlyModel(nn.Module):
         self.temporal_attention = TemporalAttention(hidden_dim)
         self.classifier = nn.Linear(hidden_dim, 1)
         
-    def forward(self, x_seq, x_cont, x_cat):
+    def forward(self, x_seq, x_cont, x_cat, sequence_mask=None):
         H = self.temporal_encoder(x_seq)
-        h_t, alpha = self.temporal_attention(H)
+        h_t, alpha = self.temporal_attention(H, sequence_mask)
         return self.classifier(h_t), alpha
 

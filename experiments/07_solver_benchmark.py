@@ -1,168 +1,161 @@
-import sys, os, time
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+"""Compare all recourse solvers on identical held-out applicants."""
 
-import pandas as pd
+from __future__ import annotations
+
+import argparse
+from collections import Counter
+from pathlib import Path
+import sys
+import time
+
 import numpy as np
-from sklearn.model_selection import train_test_split
-from backend.models.risk_model import RiskModelAdapter
-from backend.models.feature_engineering import build_enriched_dataset
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from backend.engine.constraint_registry import DEFAULT_REGISTRY
 from backend.engine.feature_contract import FEATURE_CONTRACT_V3
-from backend.engine.solvers.slsqp_solver import SLSQPSolver
+from backend.engine.solver_router import SolverRouter
 from backend.engine.solvers.binary_search_solver import BinarySearchSolver
 from backend.engine.solvers.dice_solver import DiCESolver
-from backend.engine.solver_router import SolverRouter
-from backend.engine.validator import FeasibilityGuard
-
-DATA_DIR = 'data'
-N_SAMPLE = 1000
-
-def get_held_out_applicants(adapter, n=1000):
-    df = pd.read_csv('data/test_reference.csv')
-    df = df.dropna(subset=['TARGET'])
-    risks = adapter.predict_risk(df)
-    threshold = DEFAULT_REGISTRY.recourse_threshold()
-    above_thresh = df[risks > threshold].copy()
-    if len(above_thresh) > n:
-        sample = above_thresh.sample(n=n, random_state=42)
-    else:
-        sample = above_thresh
-    return sample
+from backend.engine.solvers.slsqp_solver import SLSQPSolver
+from backend.models.risk_model import RiskModelAdapter
+from experiments.bootstrap import bootstrap_metric
+from experiments.reporting import save_benchmark_run
 
 
-def bootstrap_ci(metric_list, n_bootstraps=1000, ci=95):
-    if not metric_list:
-        return 0.0, 0.0, 0.0
-    arr = np.array(metric_list)
-    boot_means = []
-    for _ in range(n_bootstraps):
-        boot_sample = np.random.choice(arr, size=len(arr), replace=True)
-        boot_means.append(np.mean(boot_sample))
-
-    lower = np.percentile(boot_means, (100 - ci) / 2)
-    upper = np.percentile(boot_means, 100 - (100 - ci) / 2)
-    return np.mean(arr), lower, upper
+def _as_dict(result) -> dict:
+    return result if isinstance(result, dict) else result.to_dict()
 
 
-if __name__ == '__main__':
-    print('Loading model...')
+def _changed_features(result: dict) -> int:
+    original = result.get("original_state") or {}
+    updated = result.get("new_state") or {}
+    return sum(
+        1
+        for name, value in updated.items()
+        if name in original and value != original[name]
+    )
+
+
+def evaluate_solver(name: str, solver, applicant: pd.DataFrame, applicant_id: int) -> dict:
+    started = time.perf_counter()
+    try:
+        result = _as_dict(solver.generate_recourse(applicant))
+        error = None
+    except Exception as exc:
+        result = {"status": "failed", "message": str(exc)}
+        error = type(exc).__name__
+    latency = time.perf_counter() - started
+    gates = result.get("gate_results") or result.get("validation") or {}
+    success = result.get("status") in {"success", "eligible"}
+    attempted = result.get("tiers_attempted", [])
+    return {
+        "applicant_id": applicant_id,
+        "solver": name,
+        "success": int(success),
+        "validity": int(success and all(gates.values())) if gates else int(success),
+        "structural_violation": int(not gates.get("V_structural", True)),
+        "actionability_violation": int(not gates.get("V_actionability", True)),
+        "plausibility_violation": int(not gates.get("V_plausibility", True)),
+        "manifold_failure": int(not gates.get("V_manifold", True)),
+        "action_cost": result.get("cost", np.nan),
+        "latency_seconds": latency,
+        "features_changed": _changed_features(result),
+        "fallback": int(name == "Router" and len(attempted) > 1),
+        "failure_reason": None if success else error or result.get("message", "unknown"),
+    }
+
+
+def _metric(values, metric=np.mean, seed=42) -> dict:
+    return bootstrap_metric(values, metric=metric, seed=seed)
+
+
+def summarize_population(results: pd.DataFrame, applicant_ids: set[int], seed: int) -> dict:
+    population = results[results["applicant_id"].isin(applicant_ids)]
+    summary = {}
+    for solver, rows in population.groupby("solver"):
+        successful = rows[rows["success"] == 1]
+        summary[solver] = {
+            "recourse_coverage": _metric(rows["success"].tolist(), seed=seed),
+            "validity_rate": _metric(rows["validity"].tolist(), seed=seed),
+            "structural_violation_rate": _metric(rows["structural_violation"].tolist(), seed=seed),
+            "actionability_violation_rate": _metric(rows["actionability_violation"].tolist(), seed=seed),
+            "plausibility_violation_rate": _metric(rows["plausibility_violation"].tolist(), seed=seed),
+            "manifold_failure_rate": _metric(rows["manifold_failure"].tolist(), seed=seed),
+            "mean_action_cost": _metric(successful["action_cost"].tolist(), seed=seed),
+            "median_action_cost": _metric(successful["action_cost"].tolist(), metric=np.median, seed=seed),
+            "p50_latency_seconds": _metric(rows["latency_seconds"].tolist(), metric=np.median, seed=seed),
+            "p95_latency_seconds": _metric(
+                rows["latency_seconds"].tolist(), metric=lambda data: np.percentile(data, 95), seed=seed
+            ),
+            "mean_features_changed": _metric(successful["features_changed"].tolist(), seed=seed),
+            "fallback_frequency": _metric(rows["fallback"].tolist(), seed=seed),
+            "failure_reasons": Counter(rows["failure_reason"].dropna()).most_common(),
+        }
+    return summary
+
+
+def run(n_applicants: int = 1000, seed: int = 42, run_id: str = "solver-benchmark") -> Path:
     adapter = RiskModelAdapter()
     adapter.load()
+    test = pd.read_csv("data/test_reference.csv")
+    risk = adapter.predict_risk(test)
+    candidates = test[risk > DEFAULT_REGISTRY.recourse_threshold()].head(n_applicants)
+    training = pd.read_csv("data/train_reference.csv").head(5000)
+    shared = {
+        "risk_model": adapter,
+        "threshold": DEFAULT_REGISTRY.recourse_threshold(),
+        "registry": DEFAULT_REGISTRY,
+        "feature_contract": FEATURE_CONTRACT_V3,
+    }
+    solvers = {
+        "BinarySearch": BinarySearchSolver(**shared),
+        "SLSQP": SLSQPSolver(**shared),
+        "DiCE": DiCESolver(**shared, training_data=training),
+        "Router": SolverRouter(**shared, training_data=training),
+    }
+    rows = []
+    for index, (_, applicant) in enumerate(candidates.iterrows()):
+        applicant_id = int(applicant.get("SK_ID_CURR", index))
+        frame = applicant.to_frame().T
+        for name, solver in solvers.items():
+            rows.append(evaluate_solver(name, solver, frame, applicant_id))
+    results = pd.DataFrame(rows)
+    all_ids = set(results["applicant_id"].unique())
+    solvable_ids = set(
+        results.groupby("applicant_id")["success"].max().loc[lambda series: series == 1].index
+    )
+    summary = {
+        "all_above_recourse_threshold": summarize_population(results, all_ids, seed),
+        "solvable_by_at_least_one_solver": summarize_population(results, solvable_ids, seed),
+        "bootstrap_seed": seed,
+        "n_all": len(all_ids),
+        "n_solvable": len(solvable_ids),
+    }
+    report = (
+        "# Solver benchmark\n\n"
+        f"Applicants above threshold: {len(all_ids)}. Applicants solvable by at least one solver: "
+        f"{len(solvable_ids)}. Machine-readable estimates and 95% applicant-level bootstrap "
+        "intervals are in `summary.json`.\n"
+    )
+    return save_benchmark_run(
+        run_id,
+        config={"n_applicants": n_applicants, "bootstrap_seed": seed},
+        applicant_results=results,
+        summary=summary,
+        report_markdown=report,
+    )
 
-    print(f'Extracting {N_SAMPLE} high-risk held-out applicants...')
-    test_sample = get_held_out_applicants(adapter, n=N_SAMPLE)
 
-    print(f'Loading training data for DiCE/durability...')
-    # Load 5000 train rows
-    df_all = build_enriched_dataset(DATA_DIR)
-    X_train = pd.read_csv('data/train_reference.csv')
-    train_sample = X_train.head(5000)
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n-applicants", type=int, default=1000)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--run-id", default="solver-benchmark")
+    args = parser.parse_args()
+    print(run(args.n_applicants, args.seed, args.run_id))
 
-    kwargs = dict(risk_model=adapter, threshold=DEFAULT_REGISTRY.recourse_threshold(),
-                  registry=DEFAULT_REGISTRY, feature_contract=FEATURE_CONTRACT_V3)
 
-    slsqp = SLSQPSolver(**kwargs)
-    bsearch = BinarySearchSolver(**kwargs)
-    dice = DiCESolver(**kwargs, training_data=train_sample)
-    router = SolverRouter(**kwargs, training_data=train_sample)
-
-    solvers = [
-        ('BinarySearch', bsearch),
-        ('SLSQP', slsqp),
-        ('DiCE', dice),
-        ('Router', router)
-    ]
-
-    results_by_solver = {name: [] for name, _ in solvers}
-
-    print(f'Benchmarking on {len(test_sample)} applicants...')
-
-    for i in range(len(test_sample)):
-        if (i+1) % 100 == 0:
-            print(f'  Processed {i+1}/{len(test_sample)}...')
-
-        applicant_row = test_sample.iloc[[i]]
-
-        for name, solver in solvers:
-            t0 = time.time()
-            if name == 'Router':
-                res_dict = solver.generate_recourse(applicant_row)
-                status = res_dict.get('status')
-                cost = res_dict.get('cost')
-                gates = res_dict.get('validation') or res_dict.get('gate_results')
-                is_success = (status == 'success')
-            else:
-                res = solver.generate_recourse(applicant_row)
-                status = res.status
-                cost = res.cost
-                gates = res.gate_results
-                is_success = (status == 'success')
-                
-            elapsed = time.time() - t0
-            
-            results_by_solver[name].append({
-                'validity': 1 if is_success else 0,
-                'structural_fail': 1 if gates and not gates.get('V_structural', True) else 0,
-                'actionability_fail': 1 if gates and not gates.get('V_actionability', True) else 0,
-                'plausibility_fail': 1 if gates and not gates.get('V_plausibility', True) else 0,
-                'durability_fail': 1 if gates and not gates.get('V_durability', True) else 0,
-                'cost': cost if cost is not None else float('nan'),
-                'latency': elapsed
-            })
-
-    # Output metrics
-    print('\n' + '='*80)
-    print(f'SOLVER BENCHMARK RESULTS (N={len(test_sample)} held-out)')
-    print('='*80)
-
-    cols = ['Metric', 'BinarySearch', 'SLSQP', 'DiCE', 'Router']
-    print(f'{cols[0]:<30} {cols[1]:<15} {cols[2]:<15} {cols[3]:<15} {cols[4]:<15}')
-    print('-'*80)
-
-    def format_ci(mean, lower, upper, is_pct=True):
-        if is_pct:
-            return f'{mean:.1%} [{lower:.1%}-{upper:.1%}]'
-        else:
-            return f'{mean:.3f} [{lower:.3f}-{upper:.3f}]'
-
-    metrics = [
-        ('Full feasible validity', 'validity', True),
-        ('Structural violation rate', 'structural_fail', True),
-        ('Actionability violation rate', 'actionability_fail', True),
-        ('Plausibility violation rate', 'plausibility_fail', True),
-        ('Durability violation rate', 'durability_fail', True),
-    ]
-
-    for label, key, is_pct in metrics:
-        row_str = f'{label:<30}'
-        for name, _ in solvers:
-            vals = [r[key] for r in results_by_solver[name]]
-            mean, lower, upper = bootstrap_ci(vals)
-            row_str += f' {format_ci(mean, lower, upper, is_pct):<15}'
-        print(row_str)
-
-    # Latency and cost
-    row_str = f'{"Median action cost":<30}'
-    for name, _ in solvers:
-        valid_costs = [r['cost'] for r in results_by_solver[name] if not np.isnan(r['cost'])]
-        if valid_costs:
-            mean = np.median(valid_costs)
-            row_str += f' {mean:<15.4f}'
-        else:
-            row_str += f' {"-":<15}'
-    print(row_str)
-
-    row_str = f'{"P50 latency (s)":<30}'
-    for name, _ in solvers:
-        lats = [r['latency'] for r in results_by_solver[name]]
-        p50 = np.percentile(lats, 50)
-        row_str += f' {p50:<15.3f}'
-    print(row_str)
-
-    row_str = f'{"P95 latency (s)":<30}'
-    for name, _ in solvers:
-        lats = [r['latency'] for r in results_by_solver[name]]
-        p95 = np.percentile(lats, 95)
-        row_str += f' {p95:<15.3f}'
-    print(row_str)
-    print('='*80)
+if __name__ == "__main__":
+    main()

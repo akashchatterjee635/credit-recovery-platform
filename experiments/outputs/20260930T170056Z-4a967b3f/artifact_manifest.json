@@ -1,0 +1,48 @@
+{
+  "run_id": "20260930T170056Z-4a967b3f",
+  "command": "python -m scripts.train_static",
+  "created_at": "2026-09-30T17:00:56.636287+00:00",
+  "git_commit": "a94aacd55be34aad829c51374f5e4aaadcc412c7",
+  "random_seeds": {
+    "python": 42,
+    "numpy": 42,
+    "torch": 42
+  },
+  "dataset_hashes": {},
+  "feature_list_and_order": [
+    "AMT_CREDIT",
+    "AMT_INCOME_TOTAL",
+    "AMT_ANNUITY",
+    "DAYS_BIRTH",
+    "DAYS_EMPLOYED",
+    "NAME_EDUCATION_TYPE",
+    "BUREAU_TOTAL_DEBT",
+    "INST_LATE_RATIO"
+  ],
+  "split_identifiers": {},
+  "preprocessing_version": "static-preprocessor-v3",
+  "package_versions": {
+    "numpy": "2.5.2",
+    "pandas": "3.0.5",
+    "scikit-learn": "1.9.0",
+    "lightgbm": "4.7.0",
+    "torch": "2.14.0+cpu"
+  },
+  "hyperparameters": {
+    "seed": 42,
+    "dataset": "data/train_reference.csv",
+    "label": "TARGET",
+    "output": "backend/models/lgbm_model.pkl",
+    "smoke_output": "artifacts/demo_static_model.joblib",
+    "n_estimators": 300,
+    "learning_rate": 0.05,
+    "preprocessing_version": "static-preprocessor-v3"
+  },
+  "evaluation_metrics": {
+    "train_roc_auc": 1.0
+  },
+  "artifact_checksums": {
+    "artifacts\\demo_static_model.joblib": "0b771a0f16a4a85a1c5ea20638ad65766e488933832c12bc4119dd2e8c60a9e3",
+    "artifacts\\artifact_manifest.json": "2d98ecf56fb6b2d4b5832e7ffc874c2486fe5263c5c03080d116fd71ae7e5cbe"
+  }
+}

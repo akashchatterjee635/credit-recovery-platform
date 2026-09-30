@@ -1,0 +1,5 @@
+minimum_subgroup_sample_size: 100
+maximum_subgroup_calibration_gap: 0.05
+maximum_recourse_cost_ratio: 1.50
+maximum_plan_instability_score: 0.50
+maximum_recommendation_churn: 0.10

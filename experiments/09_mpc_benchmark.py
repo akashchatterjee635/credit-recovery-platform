@@ -40,7 +40,7 @@ DELTA_SAFETY = 0.05
 BASE_TAU     = 0.30
 TAU_TARGET   = BASE_TAU - DELTA_SAFETY   # 0.25
 
-ENVIRONMENT  = "zero"    # "zero" | "mild" | "moderate" | "severe"
+ENVIRONMENT  = "zero"    # "zero" | "mild" | "moderate" | "severe" | "policy_shift"
 
 
 # ── Actionable feature list (used across regimes) ─────────────────────────────
@@ -62,9 +62,7 @@ def _get_config(env_name: str) -> DisturbanceConfig:
     if env_name == "mild":
         return DisturbanceConfig.low_disturbance()
     if env_name == "moderate":
-        cfg = DisturbanceConfig.moderate_disturbance()
-        cfg.policy_shift = True
-        return cfg
+        return DisturbanceConfig.moderate_disturbance()
     if env_name == "severe":
         return DisturbanceConfig(
             p_miss=0.20, beta_alpha=5.0, beta_beta=1.5,
@@ -72,6 +70,11 @@ def _get_config(env_name: str) -> DisturbanceConfig:
             income_shock_min=0.50, income_shock_max=0.80,
             shifted_threshold=0.25, policy_shift=True,
         )
+    if env_name == "policy_shift":
+        cfg = DisturbanceConfig.low_disturbance()
+        cfg.policy_shift = True
+        cfg.shifted_threshold = 0.25
+        return cfg
     raise ValueError(f"Unknown environment: {env_name!r}")
 
 

@@ -4,8 +4,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from backend.engine.constraint_registry import DEFAULT_REGISTRY
 
 
-def test_registry_has_six_constraints():
-    assert len(DEFAULT_REGISTRY.all_constraints()) == 6
+EXPECTED_CONSTRAINTS = {
+    "DTI_MAX_001",
+    "ANNUITY_CREDIT_MIN_001",
+    "ANNUITY_CREDIT_MAX_001",
+    "MONTHLY_INCOME_CAP_001",
+    "MONTHLY_CREDIT_CAP_001",
+    "MONTHLY_ANNUITY_CAP_001",
+    "MONTHLY_DEBT_PAYDOWN_CAP_001",
+    "MONTHLY_OVERDUE_RESOLUTION_CAP_001",
+    "MONTHLY_ACTIVE_CREDIT_CAP_001",
+    "RECOURSE_THRESHOLD_001",
+}
+
+def test_registry_has_expected_constraints():
+    actual = {c.constraint_id for c in DEFAULT_REGISTRY.all_constraints()}
+    assert actual == EXPECTED_CONSTRAINTS
 
 
 def test_hard_constraints_are_all_hard():

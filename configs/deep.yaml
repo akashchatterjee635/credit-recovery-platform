@@ -1,0 +1,11 @@
+seed: 42
+tensor_dir: data/tensors
+metadata: artifacts/temporal_metadata.json
+output: artifacts/deep_fusion_model.pth
+hidden_dim: 64
+nhead: 4
+num_layers: 2
+dropout: 0.1
+learning_rate: 0.001
+epochs: 10
+preprocessing_version: temporal-preprocessor-v1

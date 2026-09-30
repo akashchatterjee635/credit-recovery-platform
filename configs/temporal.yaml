@@ -1,0 +1,7 @@
+seed: 42
+data_dir: data
+tensor_dir: data/tensors
+artifact_dir: artifacts
+splits: [train, cal, test]
+max_sequence_length: 36
+preprocessing_version: temporal-preprocessor-v1

@@ -1,0 +1,11 @@
+{
+  "model_version": "lgbm-demo-smoke-v1",
+  "git_commit": "a94aacd55be34aad829c51374f5e4aaadcc412c7",
+  "dataset_hash": "482e4d3fb42ae36223dce3ef6b589d40ec100af9763a9a32db20987430fb3d8a",
+  "feature_contract_version": "feature-contract-v3",
+  "constraint_registry_version": "constraint-registry-v2",
+  "test_metrics": {
+    "train_roc_auc": 1.0
+  },
+  "artifact_sha256": "0b771a0f16a4a85a1c5ea20638ad65766e488933832c12bc4119dd2e8c60a9e3"
+}

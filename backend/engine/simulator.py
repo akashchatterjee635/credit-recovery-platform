@@ -62,7 +62,7 @@ class DisturbanceConfig:
     # Policy environment parameters
     policy_shift: bool = False
     base_threshold: float = 0.30     # Baseline approval/recourse threshold
-    shifted_threshold: float = 0.27  # Moderate shift (0.27); use 0.25 for Severe
+    shifted_threshold: float = 0.25
     policy_shift_step: int = 6       # Step at or after which policy shift takes effect
     macro_threshold_noise_std: float = 0.0  # Optional macro threshold volatility
 

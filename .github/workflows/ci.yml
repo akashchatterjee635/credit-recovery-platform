@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "backend/**"
+      - "experiments/**"
+      - "scripts/**"
+      - "tests/**"
+      - "configs/**"
+      - "requirements*.txt"
+      - "requirements.in"
+      - "pyproject.toml"
+      - "Dockerfile"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install application and development dependencies
+        run: python -m pip install --upgrade pip && pip install -e ".[static,dev]"
+      - name: Static checks
+        run: |
+          ruff check --select F backend/main.py backend/database/schema.py backend/data/temporal_builder.py backend/data/temporal_preprocessor.py backend/engine/explainer.py backend/models/deep_risk_adapter.py backend/models/deep/fusion.py experiments/bootstrap.py experiments/reporting.py experiments/subgroup_stability.py experiments/mpc_suite.py scripts/utils.py scripts/train_static.py scripts/build_temporal_data.py scripts/train_temporal.py scripts/evaluate.py
+          mypy backend/models/base_model.py backend/engine/base_solver.py
+      - name: Unit tests with coverage
+        run: pytest -m "not integration" --cov=backend --cov-report=term-missing
+      - name: API integration tests
+        run: pytest -m integration tests/test_api_integration.py
+      - name: Database migration smoke test
+        run: alembic upgrade head
+      - name: Deterministic training smoke test
+        run: python -m scripts.train_static --config configs/static.yaml --smoke
+      - name: Dependency audit
+        run: pip-audit
+      - name: Docker build test
+        run: docker build -t credit-recovery-platform:ci .
